@@ -12,8 +12,11 @@ needs your attention.
        you, awake, engaged       │        the runner, unattended, overnight
 ```
 
-**Status:** all components built and unit-verified; the first end-to-end run on
-a real spec is still pending. See [Verified vs. unverified](#verified-vs-unverified).
+> **Status: work in progress, unreleased.** Everything is built and
+> unit-verified, and the first real runs have produced feedback still being
+> acted on. There is no tagged release yet, and `main` moves. If you install it,
+> pin a commit and expect churn. See
+> [Verified vs. unverified](#verified-vs-unverified).
 
 ---
 
@@ -88,6 +91,21 @@ Or clone and run it directly, without installing:
 git clone https://github.com/igdutra/claude-overnight.git
 claude --plugin-dir ./claude-overnight
 ```
+
+### Working on the plugin itself
+
+Symlink the clone into your skills directory. Claude Code loads it as a
+skills-directory plugin, and every edit is live in the next session — no
+reinstall, no version bump:
+
+```bash
+git clone https://github.com/igdutra/claude-overnight.git
+ln -s "$PWD/claude-overnight" ~/.claude/skills/workflow
+```
+
+Do not also install it from the marketplace: the marketplace copy is a frozen
+snapshot of a published version, and it takes precedence over the
+skills-directory one, so your edits would stop taking effect.
 
 ### Requirements
 
