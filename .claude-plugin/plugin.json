@@ -1,0 +1,12 @@
+{
+  "name": "workflow",
+  "description": "Discovery-to-finish workflow: scope a task, prototype directions, spec it, build it, review, QA, and explain the result. Includes an overnight runner that works a queue of specs unattended and opens pull requests by morning.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Ivo Dutra"
+  },
+  "homepage": "https://github.com/igdutra/claude-overnight",
+  "repository": "https://github.com/igdutra/claude-overnight",
+  "license": "MIT",
+  "keywords": ["workflow", "spec-driven", "overnight", "unattended", "qa", "code-review", "worktree"]
+}

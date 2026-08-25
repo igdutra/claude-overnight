@@ -1,0 +1,15 @@
+{
+  "name": "claude-overnight",
+  "owner": {
+    "name": "Ivo Dutra",
+    "url": "https://github.com/igdutra"
+  },
+  "description": "Spec-driven development for Claude Code, with an unattended overnight runner.",
+  "plugins": [
+    {
+      "name": "workflow",
+      "source": "./",
+      "description": "Spec-driven development workflow with an unattended overnight runner: implement, QA, review, fix, and open pull requests while you sleep."
+    }
+  ]
+}
