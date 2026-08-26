@@ -49,6 +49,9 @@ to leave running:
 - **A claim is not evidence.** "I opened a pull request" is verified against
   `gh` before a spec is marked shipped, because a phase can report doing
   something without having done it.
+- **A fix that does not hold triggers a web search.** From the second attempt
+  the runner looks up how the community solves this — a failure that survives a
+  fix is usually an approach fighting the framework, not careless code.
 - **Three fix attempts, then BLOCKED.** Better a clean blocked report in the
   morning than a burned window grinding on something genuinely stuck.
 - **One unfinished spec stops the run.** The queue is ordered and later specs

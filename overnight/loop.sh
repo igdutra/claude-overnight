@@ -754,8 +754,42 @@ for slug in "${pendingSpecs[@]}"; do
       break
     fi
 
+    # From the second attempt on, tell the fix phase to look outward before
+    # trying again.
+    #
+    # The first failure is usually a plain mistake and the fix is obvious from
+    # the verdict alone. A failure that survives a fix attempt is different: it
+    # often means the approach is fighting the framework rather than that the
+    # code is careless — a snapshot API that needs a host application, a test
+    # runner that will not see async assertions, a simulator that has to be
+    # warmed. Those have known community answers, and a session with no memory
+    # of the first attempt will otherwise reach for the same idea again.
+    #
+    # Deliberately not on attempt 1: searching every failure would spend budget
+    # on problems the verdict already explains.
+    searchGuidance=""
+    if (( attempt >= 2 )); then
+      searchGuidance="
+
+This is attempt $attempt — the previous fix did not clear it. Before changing
+any more code, search the web for how this is normally solved: the exact error
+text, the framework or tool involved, and what the community does about it.
+Check the project's own issue tracker and discussions too.
+
+A failure that survives a fix attempt is more often an approach fighting the
+framework than careless code, so look for the established pattern before
+inventing another workaround. If what you find contradicts the current
+approach, say so plainly and follow the evidence rather than patching around
+it. If the search turns up nothing useful, say that too and proceed on your own
+reasoning — do not stall on it.
+
+Record what you searched, what you found, and how it changed your fix in
+specs/$slug/implementation-notes.md, so the morning report can explain why the
+approach changed and the next attempt does not repeat the search."
+    fi
+
     runPhase "fix-$attempt" \
-      "Verification failed. Fix every blocking issue below, then commit. Do NOT act on anything labelled a suggestion — append those to overnight/$RUN_DATE/suggestions.md under a '## $slug' heading instead, and leave that code alone.
+      "Verification failed. Fix every blocking issue below, then commit. Do NOT act on anything labelled a suggestion — append those to overnight/$RUN_DATE/suggestions.md under a '## $slug' heading instead, and leave that code alone.$searchGuidance
 
 TEST OUTPUT:
 $testsOutput

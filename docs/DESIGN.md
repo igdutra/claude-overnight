@@ -919,6 +919,34 @@ verdicts are then meaningless whichever way they fall. An unresolved spec is a
 wall, not a gap to step around. The old behaviour optimised for getting through
 the list, which is the wrong goal when the list has dependencies in it.
 
+### Looking outward when a fix does not hold
+
+A first failure is usually a plain mistake, and the verdict says enough to fix
+it. A failure that *survives* a fix attempt is a different animal: more often
+than not the approach is fighting the framework rather than the code being
+careless — a snapshot API that needs a host application, a runner that cannot
+see async assertions, a simulator that has to be warmed first. Those have known
+community answers.
+
+The fresh-process design makes this worse before it makes it better. Attempt 2
+has no memory of attempt 1, so left to itself it reaches for the same idea
+again and fails the same way. So from attempt 2 onward the fix phase is told to
+search the web first — the exact error, the framework, the project's own issue
+tracker — and to record what it found in `implementation-notes.md`, which is
+both how the morning report can explain a change of approach and how attempt 3
+avoids repeating the search.
+
+Not on attempt 1: searching every failure spends budget on problems the verdict
+already explains. The same instinct appears in two other places, each at the
+cheapest moment to act on it — `/implement-spec` when an API does not behave as
+expected (before the workaround becomes a QA failure at several times the
+cost), and `/qa` when the doubt is about how a framework is *meant* to work
+rather than about the code. That last one has a hard edge: a criterion that
+cannot be verified is still a Fail, and a search must never become a reason to
+pass something unverified. It exists to make the `QA-FAILED:` line specific
+enough to act on, or to dissolve a misreading before it sends the next attempt
+chasing the wrong thing.
+
 ### The report is written when there is room, and owed when there is not
 
 The report is the deliverable — the code sits on branches nobody has read — but
