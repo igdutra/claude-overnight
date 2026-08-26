@@ -212,8 +212,9 @@ overnight/
     test-hook.sh                ← 61 cases
     README.md                   ← how the gate works
   loop.sh                       ← invoked by /overnight; one process per PHASE
+  spec-state.sh                 ← a spec's real state, from git and gh
   render-stream.py              ← stream-json → readable live feed
-  extract-result.py             ← final text out of a stream, for parsing
+  extract-result.py             ← final text + phase health out of a stream
   budget.sh                     ← invoked by loop.sh; trailing-5h usage
 ```
 
@@ -836,6 +837,96 @@ loudest layer, not the only one.**
   active during a run, inert otherwise. Nothing is installed per repository.
 - Fresh process per spec; up to 3 fix attempts within a spec, then BLOCKED.
 - It is **`CLAUDE.md`**, not `AGENTS.md`.
+- **Verdicts are affirmative.** A phase is green only if it said so in the
+  format its skill contract fixes. Missing, empty or unparseable output is
+  INDETERMINATE and routes to BLOCKED — never to green. See below.
+- **A claim is not evidence.** SHIPPED requires a pull request that `gh` can
+  see, not a phase reporting it opened one.
+- **The queue is ordered, so it stops on the first spec that does not ship.**
+
+## 10. Silence is not consent
+
+The run of 2026-08-25 reported `Shipped 2, blocked 0` for a night in which
+nothing shipped at all. No pull requests existed, neither branch had a commit,
+and one spec's worktree was empty. The account had hit its session limit at
+18:58, and every phase after that returned in about two seconds carrying only
+the banner `You've hit your session limit`.
+
+The cause was one line of shape, repeated three times:
+
+```bash
+testsFailed=false
+printf '%s' "$testsOutput" | grep -qE '^TESTS:[[:space:]]*FAIL' && testsFailed=true
+```
+
+This asks *did it say FAIL?* and treats every other answer as a pass. A phase
+that never ran says neither PASS nor FAIL, so it scored as success — and the
+whole architecture of this plugin is backpressure, which is to say the ability
+to be told **no**. A system built to hear "no" could not hear silence, and
+silence is the most common failure mode of all.
+
+The correction is to invert the question. `readVerdict` returns one of three
+values, and only the first is green:
+
+| | meaning |
+|---|---|
+| `PASS` | the phase affirmatively said so, in contract format |
+| `FAIL` | the phase affirmatively said so |
+| `INDETERMINATE` | it said neither — dead, truncated, or off-contract |
+
+`INDETERMINATE` is not a soft pass. It blocks exactly like `FAIL`; the only
+difference is what the morning report says about why.
+
+### Three layers, because no single signal is sufficient
+
+Detecting a phase that did not run turned out to need all three of these. In
+that night's fourteen streams, six phases hit the limit and **only four carried
+`is_error: true`** — `qa-2` and `review-2` returned the identical banner with
+`is_error: false`. Either signal alone misses cases the other catches:
+
+1. **`is_error` on the result event** — present in the stream all along, and
+   never read by the old code.
+2. **The banner text** — matched case-insensitively, and the reset time pulled
+   out of it for the report.
+3. **Silence** — no output *and* no tool calls, which is a phase that produced
+   nothing and touched nothing.
+
+### Idempotency: verifiable belongs in bash, interpretable belongs in Claude
+
+The bug report proposed putting all resume logic in the orchestrator skill, on
+the grounds that judging an abandoned worktree takes reasoning. Half right. The
+split this design settles on is **verifiable vs. interpretable**, not bash vs.
+Claude:
+
+- **`spec-state.sh` (mechanical).** Does the branch exist? Commits ahead of
+  base? Pushed? A pull request? Every one of these has a deterministic answer
+  from `git` and `gh`, needs no judgment, and — crucially — is derived from the
+  repository rather than from bookkeeping the runner wrote itself. That last
+  property is what stops a false SHIPPED from poisoning recovery, and it is why
+  this cannot live in a layer that only runs when a human types `/overnight`.
+- **The `/overnight` skill (judgment).** Uncommitted work in a worktree is the
+  genuinely ambiguous case: a fix interrupted mid-apply looks exactly like
+  deliberate work in progress. Reading the diff and choosing resume / salvage /
+  restart is reasoning, and `loop.sh` refuses to guess — it stops and hands the
+  decision over.
+
+### Why one unfinished spec stops the whole run
+
+The queue is ordered and later specs routinely build on earlier ones — 003's
+tests exercise what 002 built. Carrying past a spec whose work is unverified
+means the next spec branches from a base that lacks what it expects, and its
+verdicts are then meaningless whichever way they fall. An unresolved spec is a
+wall, not a gap to step around. The old behaviour optimised for getting through
+the list, which is the wrong goal when the list has dependencies in it.
+
+### The report is written when there is room, and owed when there is not
+
+The report is the deliverable — the code sits on branches nobody has read — but
+writing it costs a real session. So `loop.sh` writes it itself when the queue
+drained, the limit was never hit, and budget remains; otherwise it records
+`## Report — deferred` in `RUN.md` with the reason, and the next `/overnight`
+publishes it. The worst ending is a good night whose report never got written
+because the window went dry.
 
 ## Open questions
 

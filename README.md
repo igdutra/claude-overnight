@@ -43,8 +43,17 @@ to leave running:
   instead of printing text nobody reads at 2am.
 - **Bugs block; suggestions don't.** A bug sends the work back for another fix
   attempt. A suggestion is filed for later and the code is left alone.
+- **Silence is not consent.** A phase is green only if it *affirmatively said*
+  so. Output that is missing, empty, or off-contract — a phase that died, was
+  truncated, or hit a session limit — blocks. It never passes by default.
+- **A claim is not evidence.** "I opened a pull request" is verified against
+  `gh` before a spec is marked shipped, because a phase can report doing
+  something without having done it.
 - **Three fix attempts, then BLOCKED.** Better a clean blocked report in the
   morning than a burned window grinding on something genuinely stuck.
+- **One unfinished spec stops the run.** The queue is ordered and later specs
+  build on earlier ones; verifying 003 against a base that never got 002 tells
+  you nothing.
 - **A `PreToolUse` hook makes the dangerous things impossible**, not merely
   discouraged — enforcement that cannot drift at hour six.
 
@@ -262,8 +271,9 @@ skills/                          the 11 skills
 overnight/
   loop.sh                        the outer loop — one process per spec
   budget.sh                      trailing-5h usage, the stop gate
+  spec-state.sh                  a spec's real state, from git and gh
   render-stream.py               stream-json → readable live feed
-  extract-result.py              final text out of a stream, for parsing
+  extract-result.py              final text + phase health out of a stream
   hooks/block-dangerous-git.sh   the guardrail
   hooks/test-hook.sh             61 assertions
 docs/DESIGN.md                   why it is shaped this way

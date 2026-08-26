@@ -10,6 +10,39 @@ One-time setup for a repository that will host overnight runs. Everything here
 is idempotent — running it twice is safe and is the right way to re-verify a
 repo whose build commands have changed.
 
+## Re-running this on a repo that is already set up
+
+This skill is the right tool for both first-time setup **and** re-verification,
+and the second case is not a lesser one. Build commands rot: a repo whose
+`## Build & Validation` block was written for one part of the codebase keeps
+that block after the work moves elsewhere, and the commands go on exiting 0
+while testing something nobody is changing any more. That is worse than no
+block at all, because the run treats it as backpressure and it is not.
+
+So if `CLAUDE.md` already has a `## Build & Validation` block, do not assume it
+is still right. Before anything else:
+
+1. **Read the existing block** and note what it targets — which package, which
+   scheme, which project file.
+2. **Ask what the repo is actually working on now.** Look at `specs/*/` for the
+   specs that are queued or recent, and at recent commits. If the specs name a
+   target the block does not cover, that is the mismatch to fix.
+3. **Run the existing commands anyway** (Step 3 below). A command that no longer
+   exists, or that passes while running zero relevant tests, is the finding.
+4. **Report the drift explicitly** — what the block claims, what the work
+   actually needs, and what you changed. Never silently rewrite it; the user
+   picked those commands once and deserves to see them change.
+
+A concrete case this comes from: a repo whose block pointed at a sample app's
+test scheme, correct for the specs that built that sample app, and silently
+wrong for every later spec touching the main application. The suite passed all
+night and verified nothing about the code being written.
+
+When the commands are still right, say so in one line and move on. Re-running
+should be cheap when nothing has changed.
+
+---
+
 Two things must be true before a repo can run unattended:
 
 1. **Its validation commands are known and actually work.** They are the
@@ -112,7 +145,18 @@ Write to `CLAUDE.md` at the repository root:
 - Tests:     <command>
 - Typecheck: <command, or "covered by build">
 - Lint:      <command, or "none">
+- Covers:    <what these commands actually exercise>
 ```
+
+The `Covers:` line is not decoration. A command names a scheme or a package, not
+a scope, and six weeks later nobody can tell from `xcodebuild -scheme Foo`
+whether that is the thing currently being worked on. Write it as the answer to
+"if these pass, what do I actually know?" — for example `the parser package and
+its sample app; NOT the main application, which has no tests yet`.
+
+State what is **not** covered as plainly as what is. That clause is what lets a
+later run — or a later reader of this block — notice the mismatch instead of
+trusting a green suite that never touched the code in question.
 
 If `CLAUDE.md` exists, **merge** — replace an existing `## Build & Validation`
 section in place, and otherwise append. Never clobber the file; it may hold

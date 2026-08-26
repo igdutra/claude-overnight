@@ -17,6 +17,86 @@ Everything below is your job, not the user's. They typed one command; they
 should not have to know about worktrees, branches, queue files, or which script
 drives which. If something is missing, create it or fix it and say what you did.
 
+## Step 0: Get your bearings before anything else
+
+**Do this first, every time, before resolving specs or touching the queue.**
+
+A previous run may have stopped partway — a session limit, a crash, a machine
+that slept. When it did, it left worktrees, branches, and possibly uncommitted
+work on disk, and the queue file may claim things that are not true. Starting
+fresh on top of that either duplicates work or destroys it.
+
+This step exists because of a real failure: a run marked two specs `[x] SHIPPED`
+that had no commits, no pushes, and no pull requests. The next invocation read
+those marks, found nothing pending, and exited having done nothing — while one
+spec's real implementation sat uncommitted in its worktree. **The queue file is
+a claim, not evidence.** Verify against git and GitHub instead.
+
+### Ask the repository what is true
+
+For every spec you are about to run — and every spec the queue mentions, checked
+or not — get its actual state:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/overnight/spec-state.sh <repo-root> <slug>
+```
+
+It reports one verdict per spec, derived from git and `gh` rather than from any
+file the runner wrote:
+
+| Verdict | Means | What it needs |
+|---|---|---|
+| `SHIPPED` | a pull request exists | nothing — genuinely done |
+| `COMMITTED` | commits pushed, no pull request | the ship step never completed |
+| `LOCAL-ONLY` | commits exist, never pushed | push and open the pull request |
+| `DIRTY` | uncommitted work in the worktree | **your judgment — see below** |
+| `EMPTY` | branch/worktree exist, nothing in them | safe to restart from scratch |
+| `ABSENT` | nothing exists | the normal path |
+
+Also read `overnight/<date>/logs/<slug>.checkpoint.json` if it exists. It records
+each phase, whether it was healthy, and why the run stopped — written precisely
+so this question is a `cat` and not an archaeology expedition through `.jsonl`
+streams.
+
+### Then decide, per spec
+
+`loop.sh` handles the two unambiguous cases by itself: it skips a genuinely
+`SHIPPED` spec, and it reclaims an `EMPTY` one. You do not need to do anything
+for those.
+
+**The cases that need you are `DIRTY`, `LOCAL-ONLY`, and `COMMITTED`** — real
+work exists that no pull request covers. `loop.sh` deliberately refuses to guess
+here and stops with the queue item marked `?`, because the wrong guess either
+duplicates work or throws away hours of it. That judgment is yours:
+
+1. **Read what is actually there.** `git -C ../wt-<slug> status` and
+   `git -C ../wt-<slug> diff`. Read the checkpoint to see which phase it died
+   in.
+2. **Work out how far it got.** Implementation complete but never committed?
+   A fix half-applied when the limit hit, with its verification never re-run?
+   Those are different situations.
+3. **Choose, and say why:**
+   - **Resume** — the work looks coherent and the spec's verification simply
+     never ran. Keep the worktree, re-run the spec through `loop.sh`; the
+     verify/fix cycle re-checks the work as it stands.
+   - **Salvage** — the work is worth keeping but not finishing here. Commit and
+     push the branch for the user to look at, and leave the spec unqueued.
+   - **Restart** — the work is incoherent or trivial. Remove the worktree and
+     branch, and queue the spec fresh.
+
+   A fix interrupted partway through is the tricky one: it is real work, but it
+   was never verified and may be half-applied. Prefer resuming it through the
+   full verify cycle over trusting it, and never assume "the files are there" is
+   the same as "the spec is done".
+
+4. **Tell the user what you found and what you chose**, before the run starts —
+   not afterwards. This is exactly the moment where a wrong assumption costs a
+   night.
+
+**Never mark a queue item `[x]` yourself on the strength of the queue's own
+claim.** If a spec is genuinely shipped, `spec-state.sh` says `SHIPPED` and
+`loop.sh` will mark it. If it is not, it needs work.
+
 ## Step 1: Find the repository and the specs
 
 Confirm you are in a git repository (`git rev-parse --show-toplevel`). If not,
@@ -41,10 +121,24 @@ say which you skipped.
 The run needs three things. Check them and fix what you can rather than
 reporting a wall.
 
-**`CLAUDE.md` needs a `## Build & Validation` block.** This is the backpressure —
-without a real test command nothing can tell the run when it is wrong, and an
-unattended night flows forward saying *done, done, done*. If it is missing, run
-`/overnight-init` yourself to establish and verify the commands, then continue.
+**`CLAUDE.md` needs a `## Build & Validation` block — and it must cover the specs
+you are about to run.** This is the backpressure; without a real test command
+nothing can tell the run when it is wrong, and an unattended night flows forward
+saying *done, done, done*. If it is missing, run `/overnight-init` yourself to
+establish and verify the commands, then continue.
+
+Its presence is not enough. **Read the block and check it actually exercises the
+code the queued specs touch.** Commands rot: a block written when the work was
+in one package keeps naming that package after the work moves, and the suite
+goes on passing while testing nothing anybody is changing. A green light from a
+suite that never ran the new code is worse than no suite, because the run trusts
+it.
+
+Concretely: if the block's `Covers:` line (or, absent one, the commands
+themselves) names a target the queued specs do not touch, stop and say so, and
+run `/overnight-init` to re-verify and re-record the commands before launching.
+This is a judgment only you can make — `loop.sh` can see that the block exists,
+not whether it is still the right one.
 
 **`jq` and an authenticated `gh`.** The loop parses JSON and opens pull
 requests. If either is missing, stop and say exactly what to install or run —
@@ -57,8 +151,18 @@ changes, stop and show them. Do not commit the user's work for them.
 ## Step 3: Write the queue
 
 The queue lives at `overnight/<today>/QUEUE.md` and is a markdown checklist. The
-loop reads unchecked items, and marks each `[x]` shipped or `[!]` blocked as it
-goes.
+loop reads unchecked items and marks each as it goes:
+
+| Mark | Meaning |
+|---|---|
+| `[ ]` | pending — the loop will pick this up |
+| `[x]` | shipped, **verified** against GitHub — a pull request exists |
+| `[!]` | blocked or skipped — see `RUN.md` for why |
+| `[?]` | holds unshipped work and needs your judgment (Step 0) |
+
+`[x]` is now only ever written after `spec-state.sh` confirms a real pull
+request. A spec whose ship phase claimed success without producing one is marked
+`[!]`, not `[x]`.
 
 Write it from the specs you resolved in Step 1, using **full directory names**,
 not the abbreviations the user typed:
@@ -110,20 +214,39 @@ Separate processes per phase are the point, not an implementation detail: QA and
 review are only worth anything with genuinely fresh context, and a session that
 just wrote the code is the least reliable judge of it.
 
-## Step 5: Report in the morning
+## Step 5: The report
 
-When the loop finishes, publish the report:
+**`loop.sh` writes the report itself when it can.** If the queue drained, the
+session limit was never hit, and there is budget left, it runs
+`/overnight-report` as its last act and the artifact is waiting in the morning.
+
+It defers when it should not spend the budget — and records why in `RUN.md`
+under `## Report — deferred`:
+
+- the session limit was reached (no budget to write it)
+- specs are still pending (the report covers a finished run)
+- nothing ran
+- the usage budget is spent
+
+The reasoning: the report is the deliverable — the code sits on branches nobody
+has read — but generating it costs a real session, and the worst possible ending
+is a partial night whose report never got written because the window went dry.
+So it is written when there is room and owed when there is not.
+
+**When it was deferred, writing it is your job.** On any `/overnight`
+invocation, check `RUN.md` for a `## Report — deferred` (or `— not written`)
+section from a previous run. If one is there and that run is over, publish it
+before starting new work:
 
 ```
 /overnight-report <date>
 ```
 
-That reads `overnight/<date>/` and publishes one artifact covering the night —
-what shipped, what blocked, what needs a decision, with the pull request links.
+Use the date of the *deferred* run, not today's. A night's work with no report
+is a night the user cannot see.
 
-If the user is running this interactively and the loop is still going, say how
-to check on it and that the report comes after. Do not publish a partial report
-unless they ask.
+If the loop is still going, say how to check on it and that the report comes
+after. Do not publish a partial report unless they ask.
 
 ## What to tell the user
 

@@ -84,6 +84,21 @@ grep -q "## Build & Validation" CLAUDE.md 2>/dev/null || fail \
    Without a test command nothing can tell the run when it is wrong, and the whole
    verification loop is meaningless."
 
+# The block existing is not the same as the block being right. Commands rot:
+# they keep naming a scheme or a package after the work has moved elsewhere,
+# and go on exiting 0 while exercising nothing anybody is changing. The run
+# would treat that as backpressure when it is not.
+#
+# This cannot be settled mechanically — deciding whether a command still covers
+# the queued specs takes reading them. What can be done here is surface the
+# block so the decision is at least possible, and insist it says what it covers.
+if ! grep -qE '^[[:space:]]*-[[:space:]]*Covers:' CLAUDE.md 2>/dev/null; then
+  log "note: the '## Build & Validation' block has no 'Covers:' line, so nothing"
+  log "      states what these commands actually exercise. If the queued specs"
+  log "      touch code the suite does not cover, this run's green lights mean"
+  log "      nothing. Re-run /overnight-init to re-verify and record the scope."
+fi
+
 guardrailHook="$SCRIPT_DIR/hooks/block-dangerous-git.sh"
 [[ -x "$guardrailHook" ]] || fail \
   "the guardrail hook is missing or not executable at $guardrailHook.
@@ -193,6 +208,154 @@ shippedCount=0
 blockedCount=0
 skippedCount=0
 
+# Set true the moment any phase comes back holding a session-limit banner.
+# Once set, the run stops taking work: every further phase would return
+# instantly having done nothing, and marking that as a result is the bug this
+# whole file was rewritten to prevent.
+runExhausted=false
+exhaustionResetsAt=""
+exhaustedAtSpec=""
+exhaustedAtPhase=""
+
+# Set when the run stops deliberately at a spec that needs a human decision,
+# as opposed to running out of queue.
+halted=false
+haltReason=""
+
+# ---------------------------------------------------------------------------
+# Verdicts
+# ---------------------------------------------------------------------------
+# The old triage asked "did it say FAIL?" and treated everything else as a
+# pass. That is backwards for an unattended run: silence is the most common
+# failure and it scored as success. A phase is green only if it affirmatively
+# said so, in the format its own skill contract fixes.
+#
+# readVerdict <output> <marker> <passWord> <failWord>
+#   → PASS | FAIL | INDETERMINATE
+#
+# INDETERMINATE is not a soft pass. It means the phase did not answer the
+# question, and it routes to BLOCKED exactly like a FAIL — the difference is
+# only what the morning report says about why.
+readVerdict() {
+  local output="$1" marker="$2" passWord="${3:-PASS}" failWord="${4:-FAIL}"
+  local verdictLine
+
+  verdictLine=$(printf '%s' "$output" \
+    | grep -E "^[[:space:]]*${marker}:[[:space:]]*(${passWord}|${failWord})[[:space:]]*$" \
+    | tail -1)
+
+  if [[ -z "$verdictLine" ]]; then
+    printf 'INDETERMINATE'
+  elif printf '%s' "$verdictLine" | grep -qE "${failWord}[[:space:]]*$"; then
+    printf 'FAIL'
+  else
+    printf 'PASS'
+  fi
+}
+
+# The review contract emits a count line (REVIEW-BUGS: n) plus one detail line
+# per bug (REVIEW-BUG: file:line — what). loop.sh used to count only the detail
+# lines, which happen to agree with the count whenever bugs exist and silently
+# report zero when the block is malformed or missing. The count line is the
+# contract, so it is what gets read — and its absence is INDETERMINATE, not
+# zero bugs.
+#
+# readBugCount <output> → a number, or the word INDETERMINATE
+readBugCount() {
+  local output="$1" countLine
+
+  countLine=$(printf '%s' "$output" \
+    | grep -E '^[[:space:]]*REVIEW-BUGS:[[:space:]]*[0-9]+' | tail -1 \
+    | sed -E 's/^[[:space:]]*REVIEW-BUGS:[[:space:]]*([0-9]+).*$/\1/')
+
+  if [[ -z "$countLine" ]]; then
+    printf 'INDETERMINATE'
+  else
+    printf '%s' "$countLine"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# The checkpoint
+# ---------------------------------------------------------------------------
+# One JSON file per spec, rewritten after every phase. Its whole purpose is the
+# morning question: which spec stopped, at which phase, and why — answerable
+# with `cat`, rather than by grepping .jsonl streams, which is what writing the
+# bug report for the 2026-08-25 run actually required.
+#
+# It is also what a cold session reads to resume: the orchestrator loads it
+# before deciding whether to re-run a spec or leave it alone.
+checkpointPath=""
+
+checkpointPhase() {
+  local phaseName="$1" healthJson="${2:-}"
+  [[ -n "$checkpointPath" ]] || return 0
+  [[ -n "$healthJson" ]] || healthJson='{}'
+
+  python3 - "$checkpointPath" "$phaseName" "$healthJson" <<'PYEOF_CHECKPOINT'
+import json, os, sys
+from datetime import datetime
+
+checkpointPath, phaseName, healthJson = sys.argv[1], sys.argv[2], sys.argv[3]
+
+try:
+    health = json.loads(healthJson)
+except (json.JSONDecodeError, ValueError):
+    health = {}
+
+try:
+    with open(checkpointPath) as handle:
+        checkpoint = json.load(handle)
+except (OSError, json.JSONDecodeError, ValueError):
+    checkpoint = {}
+
+checkpoint.setdefault("phases", [])
+checkpoint["phases"].append({
+    "phase": phaseName,
+    "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+    "healthy": not (
+        health.get("exhausted")
+        or health.get("is_error")
+        or health.get("silent")
+        or health.get("saw_result") is False
+    ),
+    "exhausted": bool(health.get("exhausted")),
+    "is_error": bool(health.get("is_error")),
+    "tool_calls": health.get("tool_calls", 0),
+})
+checkpoint["last_phase"] = phaseName
+checkpoint["updated_at"] = checkpoint["phases"][-1]["at"]
+
+with open(checkpointPath, "w") as handle:
+    json.dump(checkpoint, handle, indent=2)
+    handle.write("\n")
+PYEOF_CHECKPOINT
+}
+
+# checkpointField <key> <value> — record a top-level fact about the spec.
+checkpointField() {
+  [[ -n "$checkpointPath" ]] || return 0
+  python3 - "$checkpointPath" "$1" "$2" <<'PYEOF_FIELD'
+import json, sys
+from datetime import datetime
+
+checkpointPath, key, value = sys.argv[1], sys.argv[2], sys.argv[3]
+
+try:
+    with open(checkpointPath) as handle:
+        checkpoint = json.load(handle)
+except (OSError, json.JSONDecodeError, ValueError):
+    checkpoint = {}
+
+checkpoint[key] = value
+checkpoint["updated_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+
+with open(checkpointPath, "w") as handle:
+    json.dump(checkpoint, handle, indent=2)
+    handle.write("\n")
+PYEOF_FIELD
+}
+
 specIndex=0
 for slug in "${pendingSpecs[@]}"; do
   specIndex=$((specIndex + 1))
@@ -257,20 +420,120 @@ for slug in "${pendingSpecs[@]}"; do
     continue
   fi
 
-  if [[ -e "$worktreePath" ]]; then
-    log "$worktreePath already exists — skipping (remove it by hand to retry)"
+  # -- State reconciliation ------------------------------------------------
+  # What is actually true about this spec, asked of git and GitHub rather than
+  # of QUEUE.md. The old code skipped on `[[ -e $worktreePath ]]` alone, which
+  # cannot tell finished work from an abandoned directory, and the queue mark
+  # it trusted instead was the very thing that had been written wrongly.
+  specState=$("$SCRIPT_DIR/spec-state.sh" --json "$repoPath" "$slug" 2>/dev/null)
+  if [[ -z "$specState" ]]; then
+    log "could not determine the state of $slug — skipping rather than guessing"
     markQueueItem "$queueEntry" "!"
     skippedCount=$((skippedCount + 1))
     continue
   fi
 
+  stateVerdict=$(printf '%s' "$specState" | jq -r '.verdict')
+  stateSafeToStart=$(printf '%s' "$specState" | jq -r '.safe_to_start')
+  stateCommitsAhead=$(printf '%s' "$specState" | jq -r '.commits_ahead')
+  stateDirtyFiles=$(printf '%s' "$specState" | jq -r '.dirty_files')
+  statePullRequest=$(printf '%s' "$specState" | jq -r '.pull_request_url')
+  stateWorktreeRegistered=$(printf '%s' "$specState" | jq -r '.worktree_registered')
+  stateBranchExists=$(printf '%s' "$specState" | jq -r '.branch_exists')
+
+  log "state: $stateVerdict (commits ahead $stateCommitsAhead, uncommitted $stateDirtyFiles)"
+
+  case "$stateVerdict" in
+    SHIPPED)
+      # A pull request already exists. This is the only verdict that means
+      # genuinely done, and it is now established by asking GitHub rather than
+      # by reading a checkbox this script wrote itself.
+      log "already shipped: $statePullRequest — marking done and moving on"
+      printf '\n## %s — ALREADY SHIPPED\n\nA pull request already exists: %s\nNothing to do; the queue mark was stale.\n' \
+        "$slug" "$statePullRequest" >> "$runLog"
+      markQueueItem "$queueEntry" "x"
+      shippedCount=$((shippedCount + 1))
+      continue
+      ;;
+
+    COMMITTED|LOCAL-ONLY|DIRTY)
+      # Real work exists that no pull request covers. Deciding what to do with
+      # it — resume it, salvage it, or throw it away — needs a diff read and a
+      # judgment call, which is the orchestrator's job, not this script's.
+      # Guessing wrong either duplicates work or destroys it, so it stops.
+      log "$slug holds work that is not shipped ($stateVerdict) — stopping the run"
+      {
+        printf '\n## %s — NEEDS A DECISION\n\n' "$slug"
+        printf 'State: **%s** — %s commits ahead of base, %s uncommitted files.\n\n' \
+          "$stateVerdict" "$stateCommitsAhead" "$stateDirtyFiles"
+        printf 'There is real work here that no pull request covers, so this run\n'
+        printf 'left it alone rather than starting over on top of it or discarding it.\n\n'
+        printf 'Worktree: `%s`\nBranch: `%s`\n\n' "$worktreePath" "$branchName"
+        printf 'Resolve it with `/overnight %s`, which reads the work and decides\n' "$slug"
+        printf 'whether to resume, salvage or restart it.\n\n'
+        printf 'The run stopped here rather than continuing to later specs. The queue\n'
+        printf 'is ordered, and a spec that is not finished is not a spec to build on.\n'
+      } >> "$runLog"
+      markQueueItem "$queueEntry" "?"
+      skippedCount=$((skippedCount + 1))
+      # Stop the whole run, not just this spec.
+      #
+      # The queue is ordered and later specs routinely build on earlier ones —
+      # 003's tests exercise what 002 built. Carrying on past a spec whose work
+      # is unfinished and unverified means the next spec branches from a base
+      # that does not contain what it expects, and its verdicts are then
+      # meaningless whichever way they go. An unresolved spec is a wall, not a
+      # gap to step around.
+      halted=true
+      haltReason="$slug holds unshipped work ($stateVerdict) and needs a decision"
+      break
+      ;;
+
+    EMPTY)
+      # Branch and/or worktree exist but nothing was ever accomplished in them
+      # — a spec that died before its first commit. There is nothing to lose,
+      # so reclaim the leftovers and run it properly.
+      log "$slug has an empty branch/worktree from a previous run — reclaiming it"
+      if [[ "$stateWorktreeRegistered" == "true" ]]; then
+        git worktree remove --force "$worktreePath" >/dev/null 2>&1 \
+          || log "could not remove the stale worktree; continuing anyway"
+      elif [[ -d "$worktreePath" ]]; then
+        rm -rf "$worktreePath"
+      fi
+      git worktree prune >/dev/null 2>&1
+      if [[ "$stateBranchExists" == "true" ]]; then
+        git branch -D "$branchName" >/dev/null 2>&1 \
+          || log "could not delete the empty branch $branchName; continuing anyway"
+      fi
+      ;;
+
+    ABSENT)
+      : # Nothing exists yet. The normal path.
+      ;;
+  esac
+
   log "creating worktree $worktreePath on $branchName"
-  if ! git worktree add "$worktreePath" -b "$branchName" >/dev/null 2>&1; then
+  if ! git worktree add "$worktreePath" -b "$branchName" 2>&1 | tail -3; then
     log "could not create the worktree — skipping"
     markQueueItem "$queueEntry" "!"
     skippedCount=$((skippedCount + 1))
     continue
   fi
+
+  # The pipe above means $? is tail's status, so confirm the worktree really is
+  # there. A silent failure here would run the whole spec in the wrong
+  # directory — against the user's main checkout.
+  if [[ ! -d "$worktreePath" ]]; then
+    log "worktree was not created at $worktreePath — skipping"
+    markQueueItem "$queueEntry" "!"
+    skippedCount=$((skippedCount + 1))
+    continue
+  fi
+
+  # Open the checkpoint now that the spec is genuinely starting.
+  checkpointPath="$repoPath/$runDirectory/logs/$slug.checkpoint.json"
+  printf '{"slug":"%s","branch":"%s","worktree":"%s","started_at":"%s","phases":[]}\n' \
+    "$slug" "$branchName" "$worktreePath" "$(date '+%Y-%m-%dT%H:%M:%S%z')" > "$checkpointPath"
 
   # A worktree is a fresh checkout, so gitignored files the build needs are not
   # in it. .worktreeinclude only applies to worktrees Claude Code creates, so
@@ -312,6 +575,8 @@ for slug in "${pendingSpecs[@]}"; do
 
   # runPhase <name> <prompt> [extra claude args...]
   # Leaves the phase's final text in $phaseOutput and its raw stream on disk.
+  # Sets $phaseHealthy false and $runExhausted true when the phase did not
+  # actually run — see the health check below.
   runPhase() {
     local phaseName="$1" phasePrompt="$2"
     shift 2
@@ -335,22 +600,84 @@ for slug in "${pendingSpecs[@]}"; do
 
     phaseOutput=$(python3 "$SCRIPT_DIR/extract-result.py" "$streamPath")
     printf '\n===== %s =====\n%s\n' "$phaseName" "$phaseOutput" >> "$specLog"
+
+    # Did this phase actually run, or did it come back holding a banner?
+    #
+    # A rate-limited turn returns instantly, with well-formed output, having
+    # done nothing. On 2026-08-25 twelve consecutive phases did exactly that
+    # and every one of them was scored green, because the triage below only
+    # ever looked for the word FAIL. The health check is what makes "returned
+    # without running" distinguishable from "ran and found nothing wrong".
+    local healthJson
+    healthJson=$(python3 "$SCRIPT_DIR/extract-result.py" --health "$streamPath" 2>/dev/null)
+
+    phaseHealthy=true
+    phaseUnhealthyReason=""
+
+    if [[ -n "$healthJson" ]]; then
+      local phaseExhausted phaseIsError phaseSilent phaseResetsAt phaseSawResult
+      phaseExhausted=$(printf '%s' "$healthJson" | jq -r '.exhausted // false')
+      phaseIsError=$(printf '%s' "$healthJson" | jq -r '.is_error // false')
+      phaseSilent=$(printf '%s' "$healthJson" | jq -r '.silent // false')
+      phaseSawResult=$(printf '%s' "$healthJson" | jq -r '.saw_result // false')
+      phaseResetsAt=$(printf '%s' "$healthJson" | jq -r '.resets_at // ""')
+
+      if [[ "$phaseExhausted" == "true" ]]; then
+        phaseHealthy=false
+        runExhausted=true
+        exhaustionResetsAt="$phaseResetsAt"
+        phaseUnhealthyReason="session limit reached"
+        [[ -n "$phaseResetsAt" ]] && phaseUnhealthyReason="session limit reached (resets $phaseResetsAt)"
+      elif [[ "$phaseIsError" == "true" ]]; then
+        phaseHealthy=false
+        phaseUnhealthyReason="the phase returned an error"
+      elif [[ "$phaseSilent" == "true" ]]; then
+        phaseHealthy=false
+        phaseUnhealthyReason="the phase produced no output and called no tools"
+      elif [[ "$phaseSawResult" != "true" ]]; then
+        phaseHealthy=false
+        phaseUnhealthyReason="the stream ended without a result (killed or crashed)"
+      fi
+    else
+      phaseHealthy=false
+      phaseUnhealthyReason="could not read the phase's stream"
+    fi
+
+    if ! $phaseHealthy; then
+      log "!! $phaseName did not run: $phaseUnhealthyReason"
+    fi
+
+    checkpointPhase "$phaseName" "$healthJson"
   }
 
   # -- Implement -----------------------------------------------------------
   runPhase implement "/implement-spec $slug"
+
+  # A dead implement phase makes everything downstream meaningless: there is
+  # nothing to test, QA or review. Stop here rather than burning five more
+  # invocations to discover the same thing five more times.
+  if ! $phaseHealthy; then
+    log "implement did not run ($phaseUnhealthyReason) — abandoning this spec"
+    specResult="BLOCKED"
+    blockReason="the implement phase did not run: $phaseUnhealthyReason"
+    implementFailed=true
+  else
+    implementFailed=false
+  fi
 
   # -- Verify, fix, repeat -------------------------------------------------
   # Three attempts, then stop. Three rounds of fresh-eyes verification failing
   # means it is stuck in a way another identical round will not solve, and the
   # remaining budget is better spent on the next spec.
   attempt=0
-  specResult="BLOCKED"
-  blockReason="did not reach a green state"
+  if ! $implementFailed; then
+    specResult="BLOCKED"
+    blockReason="did not reach a green state"
+  fi
   qaSummary=""
   suggestionCount=0
 
-  while (( attempt < MAX_FIX_ATTEMPTS )); do
+  while (( attempt < MAX_FIX_ATTEMPTS )) && ! $implementFailed && ! $runExhausted; do
     attempt=$((attempt + 1))
     log "attempt $attempt of $MAX_FIX_ATTEMPTS"
 
@@ -360,36 +687,69 @@ for slug in "${pendingSpecs[@]}"; do
       "Run this project's test, lint and typecheck commands from CLAUDE.md's '## Build & Validation' block. Report exactly what you ran and what you observed. End your reply with a single line: TESTS: PASS or TESTS: FAIL"
     testsOutput="$phaseOutput"
 
-    runPhase "qa-$attempt" "/qa $slug"
-    qaOutput="$phaseOutput"
+    if ! $runExhausted; then
+      runPhase "qa-$attempt" "/qa $slug"
+      qaOutput="$phaseOutput"
+    else
+      qaOutput=""
+    fi
 
-    runPhase "review-$attempt" "/local-code-review"
-    reviewOutput="$phaseOutput"
+    if ! $runExhausted; then
+      runPhase "review-$attempt" "/local-code-review"
+      reviewOutput="$phaseOutput"
+    else
+      reviewOutput=""
+    fi
 
     # Triage. Must-fix: failing tests, a QA FAIL, or any review bug.
     # Never-fix: suggestions — those are the user's to judge in the morning.
-    testsFailed=false
-    printf '%s' "$testsOutput" | grep -qE '^TESTS:[[:space:]]*FAIL' && testsFailed=true
+    #
+    # Every verdict must be affirmative. A phase that did not say PASS did not
+    # pass, whether it said FAIL, said nothing, or never ran — the old code
+    # collapsed all three onto "not FAIL" and therefore onto green.
+    testsVerdict=$(readVerdict "$testsOutput" "TESTS")
+    qaVerdict=$(readVerdict "$qaOutput" "QA-VERDICT")
+    bugCount=$(readBugCount "$reviewOutput")
 
-    qaFailed=false
-    printf '%s' "$qaOutput" | grep -qE '^QA-VERDICT:[[:space:]]*FAIL' && qaFailed=true
-
-    bugCount=$(printf '%s' "$reviewOutput" | grep -cE '^REVIEW-BUG:' || true)
     qaSummary=$(printf '%s' "$qaOutput" | grep -E '^QA-CRITERIA:' | tail -1 \
       | sed -E 's/^QA-CRITERIA:[[:space:]]*//' || true)
     suggestionCount=$(printf '%s' "$reviewOutput" | grep -E '^REVIEW-SUGGESTIONS:' | tail -1 \
       | sed -E 's/^REVIEW-SUGGESTIONS:[[:space:]]*//; s/[^0-9].*$//' || true)
     suggestionCount="${suggestionCount:-0}"
 
-    log "triage: tests=$($testsFailed && echo FAIL || echo pass), qa=$($qaFailed && echo FAIL || echo pass), bugs=$bugCount, suggestions=$suggestionCount"
+    log "triage: tests=$testsVerdict, qa=$qaVerdict, bugs=$bugCount, suggestions=$suggestionCount"
 
-    if ! $testsFailed && ! $qaFailed && [[ "$bugCount" -eq 0 ]]; then
+    # A session limit anywhere in the attempt ends the run. Continuing would
+    # score phases that never executed.
+    if $runExhausted; then
+      specResult="BLOCKED"
+      blockReason="the session limit was reached during attempt $attempt"
+      exhaustedAtSpec="$slug"
+      exhaustedAtPhase="attempt $attempt"
+      log "session limit reached mid-attempt — stopping"
+      break
+    fi
+
+    if [[ "$testsVerdict" == "PASS" && "$qaVerdict" == "PASS" && "$bugCount" == "0" ]]; then
       specResult="GREEN"
       break
     fi
 
+    # Distinguish "verified and found wanting" from "never answered". Both
+    # block, but only the first is worth spending a fix attempt on — a fix
+    # phase cannot act on a verdict that was never given.
+    unansweredVerdicts=""
+    [[ "$testsVerdict" == "INDETERMINATE" ]] && unansweredVerdicts="$unansweredVerdicts tests"
+    [[ "$qaVerdict" == "INDETERMINATE" ]] && unansweredVerdicts="$unansweredVerdicts qa"
+    [[ "$bugCount" == "INDETERMINATE" ]] && unansweredVerdicts="$unansweredVerdicts review"
+
+    if [[ -n "$unansweredVerdicts" ]]; then
+      log "no verdict from:$unansweredVerdicts — treating as a failure, not a pass"
+    fi
+
     if (( attempt >= MAX_FIX_ATTEMPTS )); then
-      blockReason="still failing after $MAX_FIX_ATTEMPTS attempts (tests=$($testsFailed && echo FAIL || echo pass), qa=$($qaFailed && echo FAIL || echo pass), bugs=$bugCount)"
+      blockReason="still failing after $MAX_FIX_ATTEMPTS attempts (tests=$testsVerdict, qa=$qaVerdict, bugs=$bugCount)"
+      [[ -n "$unansweredVerdicts" ]] && blockReason="$blockReason; no verdict from:$unansweredVerdicts"
       log "out of attempts — marking BLOCKED"
       break
     fi
@@ -412,20 +772,62 @@ $reviewOutput"
     runPhase ship \
       "All verification passed. Push this branch with 'git push -u origin $branchName' and open a pull request with 'gh pr create'. Title from the spec; body should cover what was built, the QA result, and any concerns. Do NOT merge — the user reviews and merges. End your reply with a single line: SPEC-PR: <url>"
 
-    pullRequestUrl=$(printf '%s' "$phaseOutput" | grep -E '^SPEC-PR:' | tail -1 \
+    claimedPullRequestUrl=$(printf '%s' "$phaseOutput" | grep -E '^SPEC-PR:' | tail -1 \
       | sed -E 's/^SPEC-PR:[[:space:]]*//; s/[[:space:]]+$//')
-    specResult="SHIPPED"
+
+    # SHIPPED used to be set unconditionally, purely because the ship phase had
+    # been invoked. On 2026-08-25 that phase returned a rate-limit banner
+    # having called no tools, and the spec was recorded as shipped with an
+    # empty URL — the blank after the dash in the log was the system saying so,
+    # and nothing was listening.
+    #
+    # A phase's claim about what it did is not evidence. Ask git and GitHub.
+    shipState=$("$SCRIPT_DIR/spec-state.sh" --json "$repoPath" "$slug" 2>/dev/null)
+    shipVerdict=$(printf '%s' "$shipState" | jq -r '.verdict // "UNKNOWN"')
+    pullRequestUrl=$(printf '%s' "$shipState" | jq -r '.pull_request_url // ""')
+
+    if [[ "$shipVerdict" == "SHIPPED" && -n "$pullRequestUrl" ]]; then
+      specResult="SHIPPED"
+      log "ship verified: $pullRequestUrl"
+      # Real-time visibility: a confirmed pull request is appended the moment
+      # it is confirmed, so a check-in never depends on a summary written hours
+      # later that this run has shown can be wrong.
+      printf -- '- %s  %s  %s\n' "$(date '+%H:%M:%S')" "$slug" "$pullRequestUrl" \
+        >> "$runDirectory/shipped.md"
+    else
+      specResult="BLOCKED"
+      pullRequestUrl=""
+      if [[ -n "$claimedPullRequestUrl" ]]; then
+        blockReason="the ship phase reported $claimedPullRequestUrl but no pull request exists for $branchName (state: $shipVerdict)"
+      else
+        blockReason="the ship phase did not open a pull request (state: $shipVerdict)"
+      fi
+      log "ship NOT verified — $blockReason"
+    fi
   else
     # A branch someone can look at is worth far more than a discarded one, even
     # broken — so commit and push, but open no pull request. A PR signals
     # "ready for review", and this is not.
-    runPhase salvage \
-      "This spec could not reach a green state: $blockReason. Commit any work in progress and push the branch with 'git push -u origin $branchName'. Do NOT open a pull request. Then append a section to $repoPath/$runDirectory/RUN.md under a '## $slug' heading covering: which criteria or bugs never cleared, what was tried in each attempt, your best read on why it did not work, and what you would try next."
+    # Salvage needs a working session. When the run died because the account
+    # is out of budget, invoking claude again returns another banner and the
+    # work stays uncommitted — which is exactly how spec 002's implementation
+    # was left stranded. Say so in the log instead of pretending to salvage.
+    if $runExhausted; then
+      log "skipping salvage — the session limit is what stopped this spec"
+      blockReason="$blockReason (salvage skipped: no session budget left)"
+    else
+      runPhase salvage \
+        "This spec could not reach a green state: $blockReason. Commit any work in progress and push the branch with 'git push -u origin $branchName'. Do NOT open a pull request. Then append a section to $repoPath/$runDirectory/RUN.md under a '## $slug' heading covering: which criteria or bugs never cleared, what was tried in each attempt, your best read on why it did not work, and what you would try next."
+    fi
     pullRequestUrl=""
   fi
 
   specDuration=$(( $(date +%s) - specStart ))
   unset OVERNIGHT_WORKTREE
+
+  checkpointField result "$specResult"
+  [[ -n "$pullRequestUrl" ]] && checkpointField pull_request "$pullRequestUrl"
+  [[ "$specResult" != "SHIPPED" ]] && checkpointField block_reason "$blockReason"
 
   case "$specResult" in
     SHIPPED)
@@ -456,9 +858,53 @@ $reviewOutput"
     printf -- '- Branch: `%s`\n' "$branchName"
     [[ -n "$pullRequestUrl" ]] && printf -- '- Pull request: %s\n' "$pullRequestUrl"
     printf -- '- Log: `%s`\n' "$specLog"
+    [[ "$specResult" != "SHIPPED" && -n "$blockReason" ]] \
+      && printf -- '- Reason: %s\n' "$blockReason"
     grep -E '^SPEC-(ATTEMPTS|QA|SUGGESTIONS|REASON):' "$specLog" \
       | sed 's/^SPEC-/- /' || true
   } >> "$runLog"
+
+  checkpointPath=""
+
+  # A spec that did not ship stops the run, for the same reason an unresolved
+  # one does: the queue is ordered, later specs build on earlier ones, and
+  # verifying 003 against a base that never got 002 tells you nothing. The old
+  # behaviour — carry on and tally the failures at the end — optimised for
+  # getting through the list, which is the wrong goal when the list has
+  # dependencies in it.
+  if [[ "$specResult" != "SHIPPED" ]] && ! $runExhausted; then
+    log "$slug did not ship — stopping the run rather than building on it"
+    {
+      printf '\nThe run stopped here. `%s` did not ship, and the specs after it\n' "$slug"
+      printf 'in the queue are left pending rather than built on top of an\n'
+      printf 'unverified base.\n'
+    } >> "$runLog"
+    halted=true
+    haltReason="$slug did not ship ($blockReason)"
+    break
+  fi
+
+  # The session limit ends the run, not just the spec. Every remaining phase
+  # would return instantly having done nothing, and the old code drove the
+  # whole queue that way — twelve dead invocations recorded as two shipped
+  # specs. Stop, and say precisely where it stopped.
+  if $runExhausted; then
+    log "session limit reached — stopping the run"
+    {
+      printf '\n## Run cut short — session limit\n\n'
+      printf 'The account hit its session limit'
+      [[ -n "$exhaustionResetsAt" ]] && printf ', which resets at **%s**' "$exhaustionResetsAt"
+      printf '.\n\n'
+      printf 'Stopped during `%s`' "$slug"
+      [[ -n "$exhaustedAtPhase" ]] && printf ' at %s' "$exhaustedAtPhase"
+      printf '. Nothing after this point ran, and nothing\n'
+      printf 'has been marked shipped on the strength of a phase that did not execute.\n\n'
+      printf 'Specs still pending in the queue are left unchecked. Re-run with\n'
+      printf '`/overnight` once the limit resets; it reads the checkpoints in\n'
+      printf '`%s/logs/` and resumes where this stopped.\n' "$runDirectory"
+    } >> "$runLog"
+    break
+  fi
 done
 
 # ---------------------------------------------------------------------------
@@ -469,20 +915,114 @@ echo
 log "── done ──"
 log "shipped $shippedCount, blocked $blockedCount, skipped $skippedCount"
 
+# Anything still unchecked in the queue. After an exhausted run this is the
+# honest answer to "what is left", and it is what a resuming session picks up.
+remainingSpecs=()
+while IFS= read -r queueLine; do
+  [[ -n "$queueLine" ]] && remainingSpecs+=("$queueLine")
+done < <(readQueue)
+
 {
   printf '\n---\n\nFinished %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
   printf 'Shipped %d, blocked %d, skipped %d.\n' \
     "$shippedCount" "$blockedCount" "$skippedCount"
+  if $halted; then
+    printf '\nRun stopped early: %s.\n' "$haltReason"
+  fi
+  if [[ ${#remainingSpecs[@]:-0} -gt 0 ]]; then
+    printf '\nStill pending: %d spec(s) — ' "${#remainingSpecs[@]}"
+    printf '%s ' "${remainingSpecs[@]}"
+    printf '\n'
+  fi
 } >> "$runLog"
 
 "$SCRIPT_DIR/budget.sh" || true
 
+# ---------------------------------------------------------------------------
+# The report
+# ---------------------------------------------------------------------------
+# Write the report tonight if there is budget for it, and defer it to the
+# morning if there is not.
+#
+# The report is the deliverable — the code sits on branches nobody has read.
+# But generating it costs a real Claude session, and the one ending worse than
+# a partial night is a partial night whose report never got written because the
+# window was already dry. So it is attempted only when three things hold: the
+# queue actually drained, the session limit was never hit, and there is budget
+# left over. Otherwise the run says plainly that the report is owed, and the
+# morning `/overnight` picks it up.
+reportCommand="/overnight-report $RUN_DATE"
+reportDeferredReason=""
+
+if $runExhausted; then
+  reportDeferredReason="the session limit was reached — no budget to write it"
+elif $halted; then
+  reportDeferredReason="the run stopped early ($haltReason)"
+elif [[ ${#remainingSpecs[@]:-0} -gt 0 ]]; then
+  reportDeferredReason="${#remainingSpecs[@]} spec(s) are still pending; the report covers a finished run"
+elif [[ $shippedCount -eq 0 && $blockedCount -eq 0 ]]; then
+  reportDeferredReason="nothing ran, so there is nothing to report"
+elif ! "$SCRIPT_DIR/budget.sh" --check "$budgetTokens" >/dev/null 2>&1; then
+  reportDeferredReason="the usage budget is spent"
+fi
+
+if [[ -z "$reportDeferredReason" ]]; then
+  echo
+  log "queue drained with budget to spare — writing the report now"
+
+  reportStream="$repoPath/$runDirectory/logs/report.jsonl"
+  (
+    cd "$repoPath" || exit 2
+    claude -p "$reportCommand" \
+      --permission-mode auto \
+      --output-format stream-json \
+      --verbose \
+      2>>"$runDirectory/logs/report.log"
+  ) | tee "$reportStream" | "$SCRIPT_DIR/render-stream.py" "report"
+
+  reportHealth=$(python3 "$SCRIPT_DIR/extract-result.py" --health "$reportStream" 2>/dev/null)
+  reportExhausted=$(printf '%s' "$reportHealth" | jq -r '.exhausted // false' 2>/dev/null)
+  reportIsError=$(printf '%s' "$reportHealth" | jq -r '.is_error // false' 2>/dev/null)
+
+  if [[ "$reportExhausted" == "true" || "$reportIsError" == "true" ]]; then
+    log "the report phase did not complete — it is still owed"
+    printf '\n## Report — not written\n\nThe report phase did not complete. Run `%s` to write it.\n' \
+      "$reportCommand" >> "$runLog"
+  else
+    log "report written"
+  fi
+else
+  log "report deferred: $reportDeferredReason"
+  {
+    printf '\n## Report — deferred\n\n'
+    printf 'Not written tonight: %s.\n\n' "$reportDeferredReason"
+    printf 'Write it with `%s`.\n' "$reportCommand"
+  } >> "$runLog"
+fi
+
 echo
 echo "Run record:  $runLog"
 echo "Suggestions: $runDirectory/suggestions.md"
+[[ -f "$runDirectory/shipped.md" ]] && echo "Shipped log: $runDirectory/shipped.md"
 echo
 echo "Worktrees are left in place on purpose — they hold the branches under review."
 echo "After merging, clean one up with:  git worktree remove ../wt-<slug>"
 echo
-echo "To publish the morning artifact, open Claude in this repo and run:"
-echo "  /overnight-report $RUN_DATE"
+
+if [[ -n "$reportDeferredReason" ]]; then
+  echo "The report was not written ($reportDeferredReason)."
+  echo "Open Claude in this repo and run:"
+  echo "  $reportCommand"
+fi
+
+if [[ ${#remainingSpecs[@]:-0} -gt 0 ]]; then
+  echo
+  echo "${#remainingSpecs[@]} spec(s) still pending. Resume with:  /overnight"
+fi
+
+# A run cut short — by the limit or by a spec needing a decision — is not a
+# success, and a wrapper or cron job needs to be able to tell.
+if $runExhausted || $halted; then
+  exit 1
+fi
+exit 0
