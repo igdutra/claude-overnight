@@ -391,7 +391,8 @@ drives.*
 Resolves slugs against `specs/` (accepting unambiguous prefixes), checks the
 repo is set up and runs `/overnight-init` itself if `CLAUDE.md` lacks its
 validation block, writes and commits the queue, launches `loop.sh` in the
-background, and points at `/overnight-report` for the morning.
+background, reads back the log path `loop.sh` prints so the user is told where
+to watch, and points at `/overnight-report` for the morning.
 
 It explicitly never runs the build phases itself and never creates a worktree by
 hand — `loop.sh` owns both, and it is `loop.sh` that exports
@@ -406,7 +407,8 @@ would run unguarded.
 debugging:
 
 ```bash
-loop.sh <repo> [--queue <file>] [--max-specs <n>] [--budget <tokens>] [--dry-run]
+loop.sh <repo> [--queue <file>] [--run-id <id>] [--max-specs <n>]
+        [--budget <tokens>] [--dry-run]
 ```
 
 The queue is a markdown checklist at `overnight/<date>/QUEUE.md`; unchecked
@@ -421,7 +423,7 @@ goes:
 **Preflight** — refuses to start on anything that would otherwise fail hours
 later in the dark: not a git repo, no `## Build & Validation` block, missing or
 non-executable hook, a dirty working tree, `gh` missing or unauthenticated, no
-`jq`. Then `unset ANTHROPIC_API_KEY`, making the credits fallback unreachable
+`jq`, or another run already holding this repo's lock. Then `unset ANTHROPIC_API_KEY`, making the credits fallback unreachable
 rather than merely discouraged.
 
 **Per spec** — budget gate → `git worktree add ../wt-<slug> -b spec/<slug>` →
@@ -562,6 +564,52 @@ what keeps each session in the 40–60% smart zone.
 **Why 3 attempts:** three failures means it is genuinely stuck, and a fresh
 context is unlikely to rescue it. Better a clean BLOCKED report in the morning
 than a burned window grinding.
+
+### One run owns the repo; each run owns its own state
+
+Two separate problems, easy to conflate.
+
+**State was keyed by calendar date.** `RUN.md`, the logs, the checkpoints,
+`shipped.md` and `suggestions.md` all lived flat under `overnight/<date>/`, so
+a second run the same day appended into the first run's record and overwrote
+its checkpoints. Nothing was corrupted on purpose; the design simply assumed
+one run per date and never enforced it. Everything a run produces now lives
+under `overnight/<date>/<run-id>/`. Collision stops being something to guard
+against and becomes something that cannot happen, because two runs never share
+a path.
+
+`QUEUE.md` is the exception and stays at the date level. It is an *input* — the
+operator writes it before any run exists, so it cannot live in a directory
+named after a run that has not started. Runs meant to work different spec sets
+pass `--queue`.
+
+**The runner did not own its own log.** `loop.sh` never wrote `loop.log`; that
+file existed only because some launching session redirected stdout there by
+convention. So "watch it with `tail -f`" was folklore, not a guarantee — and a
+launch that redirected to `/dev/null` left the operator watching a file nothing
+was writing to, which is exactly what happened. The script now tees its own
+output and **prints the exact `tail -f` path at launch**. Where to watch a run
+is a fact it states, not a convention each caller reinvents.
+
+**Concurrency is refused, not coordinated.** Specs share one worktree and
+branch namespace (`../wt-<slug>`, `spec/<slug>`), and they run strictly one at
+a time by design. Two runs against one repo would race `git worktree add` and
+fail hours in as an unhandled error. A lock in `.git/overnight.lock` refuses
+the second run up front and names the run holding it.
+
+The lock is deliberately conservative about its own failure modes, because a
+lock that outlives its run is worse than no lock — it wedges the repo. It
+records the owner's pid *and* command name, and treats a lock as stale when
+either the process is gone or the pid has been recycled into some other
+program. `INT`/`TERM` get their own handlers rather than relying on the `EXIT`
+trap, since bash defers traps until the current foreground child returns and a
+run spends nearly all its time blocked inside `claude -p`.
+
+Note what is *not* claimed: this serialises runs against one repo, it does not
+make them parallel. Genuinely concurrent specs would need the branch and
+worktree namespaces to stop being shared, which is a much larger change than a
+lock and buys little — the ordered queue means later specs routinely depend on
+earlier ones anyway.
 
 ### The artifact
 
@@ -740,9 +788,9 @@ still leaves things better than before.
 - [x] **5. `loop.sh` + `budget.sh`.** Outer loop and the budget gate. Verified
       end to end against a scratch repo — worktree created, verdict parsed,
       queue marked, `RUN.md` written.
-- [x] **6b. `/overnight-report`** — publishes the morning artifact from
-      `overnight/<date>/`. Built after step 5, since `loop.sh` ends by pointing
-      at it.
+- [x] **6b. `/overnight-report`** — publishes the morning artifact from a run
+      directory, `overnight/<date>/<run-id>/`. Built after step 5, since
+      `loop.sh` ends by pointing at it.
 - [ ] **6. Dry run** on one small spec, awake, watching. *Everything else is
       built; this is the remaining step.*
 
@@ -838,7 +886,13 @@ loudest layer, not the only one.**
   incrementally so a mid-night stop still leaves something complete.
 - Must-fix = QA Fail, review Bugs, and any failing test. Suggestions go to
   `suggestions.md` and never touch code.
-- Run state lives in `overnight/<date>/` inside the target repo.
+- Run state lives in `overnight/<date>/<run-id>/` inside the target repo — one
+  directory per run, so same-day runs cannot overwrite each other. `QUEUE.md`
+  stays at the date level because it is an input, not a product.
+- **One run per repo at a time**, enforced by a lock. Runs are serialised, not
+  parallelised; specs share a worktree and branch namespace.
+- **`loop.sh` owns its log** and prints the path to watch. No caller-side
+  stdout redirect is part of the contract.
 - Worktrees via **plain `git worktree add`**, outside the repo — never
   `claude --worktree`.
 - **Auto mode plus hooks.** Not `--dangerously-skip-permissions`, not sandboxing.
@@ -850,8 +904,13 @@ loudest layer, not the only one.**
   format its skill contract fixes. Missing, empty or unparseable output is
   INDETERMINATE and routes to BLOCKED — never to green. See below.
 - **A claim is not evidence.** SHIPPED requires a pull request that `gh` can
-  see, not a phase reporting it opened one.
-- **The queue is ordered, so it stops on the first spec that does not ship.**
+  see, not a phase reporting it opened one. The same rule applies to snapshot
+  tests: a passing snapshot proves nothing about a reference nobody looked at,
+  so `/qa` opens the image and inspects it.
+- **The queue is ordered, so it stops on the first spec it cannot resolve** —
+  a `DIRTY` worktree, or work it tried and failed to ship. Committed work with
+  no pull request is not such a spec: the decision was already made when it was
+  committed, so the run opens the pull request and carries on.
 
 ## 10. Silence is not consent
 
@@ -900,6 +959,48 @@ that night's fourteen streams, six phases hit the limit and **only four carried
 3. **Silence** — no output *and* no tool calls, which is a phase that produced
    nothing and touched nothing.
 
+### A green test that asserts nothing is the same failure, in pixels
+
+`INDETERMINATE` catches a phase that returned without running. Snapshot tests
+have a visual version of the same problem, and it is quieter: the test runs,
+genuinely passes, and asserts nothing worth asserting.
+
+A snapshot test can only ever detect **change**. On the recording that creates
+a reference, there is nothing to compare against, so whatever was rendered
+becomes the definition of correct. If that render was blank, the reference is
+blank, and it will match itself byte-for-byte on every run forever. The suite
+is green. It is checking nothing.
+
+That is not hypothetical. Spec 005 recorded a `ProgramListView` reference that
+was an empty dark rectangle — the renderer did not rasterize `ScrollView`
+contents at all — and it passed QA, passed review, and was nearly merged. Every
+phase reasoned about the *code*: is the view model right, are the sections
+ordered, does the row layout look sensible. None opened the PNG the test had
+just written. A second case went further: a row shipped missing its right-hand
+chevron. Not blank, so a "does it look empty?" check waves it through, while
+the affordance telling the user the row is tappable was simply gone.
+
+So `/qa` opens the image and inspects it element by element, and an unattended
+run has no other checkpoint that ever looks at rendered output. Three
+properties keep this from becoming noise:
+
+- **Scoped.** Specs with no rendered output skip it entirely; an absent
+  snapshot test is not a finding. It applies when a criterion involves a
+  rendered reference, or when the spec touched something that renders into
+  existing snapshots — a shared row, a design token, a theme — where those
+  references come into scope as a regression check no criterion names.
+- **Functional, not pixel-perfect.** Spacing, shades, font rendering and
+  platform chrome drift between a mockup and a real render. The question is
+  whether something functional is missing or wrong, not whether it matches.
+- **Differences are logged even on a pass.** A difference judged cosmetic
+  becomes a `QA-CONCERN:` line, which leaves the verdict green and surfaces in
+  the morning report for a human to overrule. The skill had always specified
+  that line and nothing read it, so concerns on passing specs died in the phase
+  log — `loop.sh` now files them into `suggestions.md`.
+
+The last one is the point. A difference noticed and not reported is worth no
+more than never having opened the file, which is how both cases got through.
+
 ### Idempotency: verifiable belongs in bash, interpretable belongs in Claude
 
 The bug report proposed putting all resume logic in the orchestrator skill, on
@@ -919,7 +1020,29 @@ Claude:
   restart is reasoning, and `loop.sh` refuses to guess — it stops and hands the
   decision over.
 
-### Why one unfinished spec stops the whole run
+The line between them is *whether a judgment has already been made*, not
+whether work is finished. `COMMITTED` and `LOCAL-ONLY` — commits on the branch
+with no pull request — used to halt alongside `DIRTY`, and that was wrong. By
+the time work is committed, somebody has already decided it was worth keeping;
+what remains is mechanical (push if unpushed, open the pull request) and the
+script can just do it. Halting there bought nothing and cost a whole second
+`/overnight` invocation to re-make a settled decision.
+
+So the arms split by ambiguity, not by completeness:
+
+| Verdict | What is missing | Who decides |
+|---|---|---|
+| `COMMITTED` | a pull request | the script — mechanical |
+| `LOCAL-ONLY` | a push and a pull request | the script — mechanical |
+| `DIRTY` | a judgment about half-applied work | the orchestrator |
+
+This does not weaken the verification contract. The ship phase's claim is still
+checked against GitHub afterwards exactly as on the normal path, and if the
+pull request does not actually appear, the run halts with the phase log path —
+the same refusal to trust a phase's self-report that `spec-state.sh` exists to
+enforce.
+
+### Why one unresolved spec stops the whole run
 
 The queue is ordered and later specs routinely build on earlier ones — 003's
 tests exercise what 002 built. Carrying past a spec whose work is unverified
@@ -927,6 +1050,11 @@ means the next spec branches from a base that lacks what it expects, and its
 verdicts are then meaningless whichever way they fall. An unresolved spec is a
 wall, not a gap to step around. The old behaviour optimised for getting through
 the list, which is the wrong goal when the list has dependencies in it.
+
+*Unresolved*, not merely unfinished: a spec the run can finish on its own — as
+it now does for committed work awaiting a pull request — is not a wall. The
+wall is a spec whose state nobody has judged, or one the run tried to ship and
+could not.
 
 ### Looking outward when a fix does not hold
 
