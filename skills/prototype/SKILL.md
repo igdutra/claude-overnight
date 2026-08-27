@@ -47,7 +47,7 @@ intermediate sources have no reason to enter the repo.
   sources straight from the live artifact URL.
 
 The repo therefore holds exactly one generated file per prototype round, not a
-trail of working files. Note in the handoff that the live canvas is the source
+trail of working files. Note in `discovery.md` that the live canvas is the source
 of truth — the committed copy is an offline fallback and does **not** resync if
 someone edits the canvas in the browser afterwards.
 

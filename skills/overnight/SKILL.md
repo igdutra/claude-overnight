@@ -53,7 +53,8 @@ file the runner wrote:
 | `EMPTY` | branch/worktree exist, nothing in them | safe to restart from scratch |
 | `ABSENT` | nothing exists | the normal path |
 
-Also read `overnight/<date>/logs/<slug>.checkpoint.json` if it exists. It records
+Also read `overnight/<date>/<run-id>/logs/<slug>.checkpoint.json` if it exists
+(newest run first, if there are several). It records
 each phase, whether it was healthy, and why the run stopped — written precisely
 so this question is a `cat` and not an archaeology expedition through `.jsonl`
 streams.
