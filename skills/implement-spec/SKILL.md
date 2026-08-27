@@ -10,6 +10,13 @@ Resolutions under `Open Questions / Risks` are decided — build on them, don't
 re-open them. If the approach fails mid-build, re-plan against `Requirements`;
 the goal holds even when the design changes.
 
+For the visual reference, read `specs/$ARGUMENTS/design.html` if it exists — a
+read-only, static snapshot of the locked design, a few KB of plain HTML. **Do
+not `cat` or read `prototype.html` or any `.dc.html` canvas file**; those bundle
+the design-canvas editor runtime (2.5 MB on spec 006) and reading one floods
+this session's context. If `design.html` is missing, work from the `SPEC.md`
+prose and the `## Prototype` section of `discovery.md`; do not open the canvas.
+
 ## First: check whether this is already partly built
 
 You may be running on a worktree that already holds work — a previous attempt

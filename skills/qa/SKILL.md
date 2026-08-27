@@ -86,12 +86,18 @@ rendered output" is a complete answer.
 what that direction committed to, which is often the only written description
 of what the screen is meant to look like. Prefer it over guessing.
 
+If `specs/$ARGUMENTS/design.html` exists, read that for the visual reference —
+it is a read-only, static snapshot of the locked design, a few KB of plain
+HTML. **Do not `cat` or read `prototype.html` or any `.dc.html` canvas file** —
+those bundle the design-canvas editor runtime (2.5 MB on spec 006) and reading
+one floods this session's context. If `design.html` is missing, say so and work
+from the `discovery.md` prose; do not open the canvas.
+
 Two cautions. The prototype is a *direction*, not a specification: it was
 deliberately disposable, and the spec supersedes it wherever they disagree. And
-you cannot open the linked artifact — the prose in `discovery.md` is what you
-have, which is exactly why that skill requires the bets and costs to be written
-out there. If no prototype was run, the spec's own description is the target
-and that is fine.
+`design.html` is a hand-made snapshot that goes stale if the canvas was edited
+after it was written — where it and `SPEC.md` disagree, the spec wins. If no
+prototype was run, the spec's own description is the target and that is fine.
 
 ### The bar is functional, not pixel-perfect
 
