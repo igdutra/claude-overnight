@@ -19,7 +19,14 @@
 # from the filesystem, without the tool-call interception.
 #
 # Usage:
-#   ./loop.sh <repo> [--queue <file>] [--max-specs <n>] [--budget <tokens>] [--dry-run]
+#   ./loop.sh <repo> [--queue <file>] [--run-id <id>] [--max-specs <n>]
+#            [--budget <tokens>] [--dry-run]
+#
+# Each run writes everything it produces — RUN.md, loop.log, per-phase logs,
+# checkpoints, shipped.md, suggestions.md — under overnight/<date>/<run-id>/,
+# so runs on the same day never share state. --run-id names that directory;
+# without it the run picks run-<HHMMSS>-<pid>. The path to tail is printed at
+# launch; no stdout redirect is needed or expected.
 #
 # The queue is a markdown checklist; unchecked items are the work:
 #   - [ ] add-login
@@ -45,6 +52,7 @@ readonly DEFAULT_BUDGET_TOKENS=8000000
 
 repoPath=""
 queueFile=""
+runId=""
 maxSpecs="$DEFAULT_MAX_SPECS"
 budgetTokens="$DEFAULT_BUDGET_TOKENS"
 dryRun=false
@@ -52,6 +60,7 @@ dryRun=false
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --queue)     queueFile="$2"; shift 2 ;;
+    --run-id)    runId="$2"; shift 2 ;;
     --max-specs) maxSpecs="$2"; shift 2 ;;
     --budget)    budgetTokens="$2"; shift 2 ;;
     --dry-run)   dryRun=true; shift ;;
@@ -121,10 +130,86 @@ command -v gh >/dev/null 2>&1 || fail "gh is not installed; the run opens pull r
 gh auth status >/dev/null 2>&1 || fail "gh is not authenticated — run: gh auth login"
 command -v jq >/dev/null 2>&1 || fail "jq is not installed"
 
-runDirectory="overnight/$RUN_DATE"
+# Every run gets its own directory, not just its own date. Keying state by
+# calendar date alone meant a second run the same day appended into the first
+# run's RUN.md, shared its QUEUE.md, and overwrote its checkpoints — and the
+# operator had no way to tell which run any given line came from. A run id
+# makes collision impossible rather than merely unlikely: two runs cannot
+# clobber each other's state when they never share a path.
+[[ -n "$runId" ]] || runId="run-$(date +%H%M%S)-$$"
+runDirectory="overnight/$RUN_DATE/$runId"
 mkdir -p "$runDirectory/logs"
 
-[[ -n "$queueFile" ]] || queueFile="$runDirectory/QUEUE.md"
+# The log this script writes about itself. Until now loop.sh never wrote one:
+# `overnight/<date>/loop.log` existed only because some launching session
+# redirected stdout there by hand, and the "tail -f the log" instruction was
+# folklore no code guaranteed. A launch that redirected to /dev/null — or a
+# second run that aimed at the first run's file — left the operator watching
+# a file nothing was writing to. Owning the path here makes "where do I watch
+# this run" a fact the script can state rather than a convention to reinvent.
+runConsoleLog="$runDirectory/loop.log"
+: > "$runConsoleLog"
+
+# tee from inside rather than asking the caller to redirect. exec rewires this
+# script's own stdout/stderr, so every log line from here on lands in both the
+# terminal and the file, and a caller who redirects to /dev/null still gets a
+# complete log on disk.
+exec > >(tee -a "$runConsoleLog") 2>&1
+
+# ---------------------------------------------------------------------------
+# The repo lock
+# ---------------------------------------------------------------------------
+# Specs run strictly one at a time by design, and every run of this script
+# shares one worktree/branch namespace (../wt-<slug>, spec/<slug>). Two runs
+# against the same repo therefore race `git worktree add` for any spec both
+# queues name. Git refuses the duplicate, so today that fails loudly rather
+# than corrupting anything — but it fails hours in, in the dark, as an
+# unhandled error rather than a designed one.
+#
+# Refusing up front is the honest behaviour. Multiple runs against *different*
+# repos stay fine; so does a second run once the first has finished.
+lockDirectory="$repoPath/.git/overnight.lock"
+if mkdir "$lockDirectory" 2>/dev/null; then
+  printf '%s\n' "$$" > "$lockDirectory/pid"
+  printf '%s\n' "$runId" > "$lockDirectory/run-id"
+  printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$lockDirectory/started-at"
+else
+  lockPid="$(cat "$lockDirectory/pid" 2>/dev/null || true)"
+  lockRunId="$(cat "$lockDirectory/run-id" 2>/dev/null || echo unknown)"
+  lockStarted="$(cat "$lockDirectory/started-at" 2>/dev/null || echo unknown)"
+
+  # A lock whose process is gone is stale — a previous run was killed before it
+  # could clean up. Reclaim it rather than making the operator delete a
+  # directory by hand to get their repo back.
+  if [[ -n "$lockPid" ]] && kill -0 "$lockPid" 2>/dev/null; then
+    fail "another overnight run is already working in this repo.
+
+   run:     $lockRunId (pid $lockPid)
+   started: $lockStarted
+
+   Specs share one worktree and branch namespace, so two runs would race each
+   other over the same ../wt-<slug> directories. Wait for that run to finish,
+   or stop it, then start this one."
+  fi
+
+  log "found a stale lock from $lockRunId (pid ${lockPid:-unknown}, started $lockStarted)"
+  log "no such process is running — reclaiming it"
+  printf '%s\n' "$$" > "$lockDirectory/pid"
+  printf '%s\n' "$runId" > "$lockDirectory/run-id"
+  printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$lockDirectory/started-at"
+fi
+
+# Release on every exit path, including failures and Ctrl-C. A lock that
+# outlives its run turns the next launch into a puzzle.
+releaseLock() { rm -rf "$lockDirectory" 2>/dev/null || true; }
+trap releaseLock EXIT INT TERM
+
+# The queue is an input, not an output: the operator writes it before any run
+# exists, so it stays at the date level rather than moving under the run
+# directory with everything this script produces. Two runs meant to work
+# different queues pass --queue; two runs sharing one queue are the case the
+# repo lock refuses outright.
+[[ -n "$queueFile" ]] || queueFile="overnight/$RUN_DATE/QUEUE.md"
 
 if [[ ! -f "$queueFile" ]]; then
   fail "no queue at $queueFile
@@ -188,7 +273,10 @@ if [[ $specCount -gt $maxSpecs ]]; then
 fi
 
 log "repo:   $repoPath"
+log "run:    $runId"
 log "queue:  $queueFile ($specCount specs)"
+log "log:    $runDirectory/loop.log"
+log "watch:  tail -f $repoPath/$runDirectory/loop.log"
 log "budget: stop taking new specs past $budgetTokens tokens in the trailing 5h"
 $dryRun && log "DRY RUN — no worktrees, no claude, no pushes"
 
@@ -199,8 +287,9 @@ $dryRun && log "DRY RUN — no worktrees, no claude, no pushes"
 runLog="$runDirectory/RUN.md"
 if [[ ! -f "$runLog" ]]; then
   {
-    printf '# Overnight run — %s\n\n' "$RUN_DATE"
+    printf '# Overnight run — %s (%s)\n\n' "$RUN_DATE" "$runId"
     printf 'Started %s\n\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')"
+    printf 'Console log: `%s/loop.log`\n\n' "$runDirectory"
   } > "$runLog"
 fi
 
@@ -357,6 +446,93 @@ PYEOF_FIELD
 }
 
 specIndex=0
+# ---------------------------------------------------------------------------
+# runPhase
+# ---------------------------------------------------------------------------
+# Defined here, above the spec loop, rather than inside it. Bash defines a
+# function when execution reaches it, so a definition inside the loop body is
+# not callable from the state-reconciliation block that runs earlier in the
+# same iteration — which is exactly what the COMMITTED/LOCAL-ONLY arm needs to
+# do. It reads $slug, $worktreePath, $specLog and $runDirectory from the
+# enclosing loop's scope either way.
+
+# runPhase <name> <prompt> [extra claude args...]
+# Leaves the phase's final text in $phaseOutput and its raw stream on disk.
+# Sets $phaseHealthy false and $runExhausted true when the phase did not
+# actually run — see the health check below.
+runPhase() {
+  local phaseName="$1" phasePrompt="$2"
+  shift 2
+
+  local streamPath="$runDirectory/logs/$slug.$phaseName.jsonl"
+  streamPath="$repoPath/$streamPath"
+
+  echo
+  log "── $slug · $phaseName ──"
+
+  (
+    cd "$worktreePath" || exit 2
+    claude -p "$phasePrompt" \
+      --permission-mode auto \
+      --add-dir "$repoPath" \
+      --output-format stream-json \
+      --verbose \
+      "$@" \
+      2>>"$specLog"
+  ) | tee "$streamPath" | "$SCRIPT_DIR/render-stream.py" "$slug/$phaseName"
+
+  phaseOutput=$(python3 "$SCRIPT_DIR/extract-result.py" "$streamPath")
+  printf '\n===== %s =====\n%s\n' "$phaseName" "$phaseOutput" >> "$specLog"
+
+  # Did this phase actually run, or did it come back holding a banner?
+  #
+  # A rate-limited turn returns instantly, with well-formed output, having
+  # done nothing. On 2026-08-25 twelve consecutive phases did exactly that
+  # and every one of them was scored green, because the triage below only
+  # ever looked for the word FAIL. The health check is what makes "returned
+  # without running" distinguishable from "ran and found nothing wrong".
+  local healthJson
+  healthJson=$(python3 "$SCRIPT_DIR/extract-result.py" --health "$streamPath" 2>/dev/null)
+
+  phaseHealthy=true
+  phaseUnhealthyReason=""
+
+  if [[ -n "$healthJson" ]]; then
+    local phaseExhausted phaseIsError phaseSilent phaseResetsAt phaseSawResult
+    phaseExhausted=$(printf '%s' "$healthJson" | jq -r '.exhausted // false')
+    phaseIsError=$(printf '%s' "$healthJson" | jq -r '.is_error // false')
+    phaseSilent=$(printf '%s' "$healthJson" | jq -r '.silent // false')
+    phaseSawResult=$(printf '%s' "$healthJson" | jq -r '.saw_result // false')
+    phaseResetsAt=$(printf '%s' "$healthJson" | jq -r '.resets_at // ""')
+
+    if [[ "$phaseExhausted" == "true" ]]; then
+      phaseHealthy=false
+      runExhausted=true
+      exhaustionResetsAt="$phaseResetsAt"
+      phaseUnhealthyReason="session limit reached"
+      [[ -n "$phaseResetsAt" ]] && phaseUnhealthyReason="session limit reached (resets $phaseResetsAt)"
+    elif [[ "$phaseIsError" == "true" ]]; then
+      phaseHealthy=false
+      phaseUnhealthyReason="the phase returned an error"
+    elif [[ "$phaseSilent" == "true" ]]; then
+      phaseHealthy=false
+      phaseUnhealthyReason="the phase produced no output and called no tools"
+    elif [[ "$phaseSawResult" != "true" ]]; then
+      phaseHealthy=false
+      phaseUnhealthyReason="the stream ended without a result (killed or crashed)"
+    fi
+  else
+    phaseHealthy=false
+    phaseUnhealthyReason="could not read the phase's stream"
+  fi
+
+  if ! $phaseHealthy; then
+    log "!! $phaseName did not run: $phaseUnhealthyReason"
+  fi
+
+  checkpointPhase "$phaseName" "$healthJson"
+}
+
 for slug in "${pendingSpecs[@]}"; do
   specIndex=$((specIndex + 1))
   echo
@@ -456,12 +632,112 @@ for slug in "${pendingSpecs[@]}"; do
       continue
       ;;
 
-    COMMITTED|LOCAL-ONLY|DIRTY)
-      # Real work exists that no pull request covers. Deciding what to do with
-      # it — resume it, salvage it, or throw it away — needs a diff read and a
-      # judgment call, which is the orchestrator's job, not this script's.
-      # Guessing wrong either duplicates work or destroys it, so it stops.
-      log "$slug holds work that is not shipped ($stateVerdict) — stopping the run"
+    COMMITTED|LOCAL-ONLY)
+      # Committed work with no pull request. This used to halt alongside DIRTY,
+      # asking the orchestrator to read the diff and decide — but by the time
+      # work is committed that decision has already been made and acted on by
+      # whoever committed it. What is missing is purely mechanical: push the
+      # branch if it is unpushed, then open the pull request. Halting here cost
+      # a whole second /overnight invocation to re-make a settled decision.
+      #
+      # If the work turns out not to be green, that is what the verify/fix
+      # cycle below is for. Nothing is being trusted that is not checked: the
+      # ship phase's claim is still verified against GitHub afterwards, exactly
+      # as it is on the normal path.
+      log "$slug holds committed work with no pull request ($stateVerdict) — finishing it"
+
+      if [[ "$stateWorktreeRegistered" != "true" || ! -d "$worktreePath" ]]; then
+        # The commits exist on the branch but the worktree they were made in is
+        # gone. Recreate it on that same branch — checking the branch out
+        # rather than creating one, so the existing commits come with it.
+        log "worktree is missing — checking out the existing branch $branchName"
+        git worktree prune >/dev/null 2>&1
+        if ! git worktree add "$worktreePath" "$branchName" 2>&1 | tail -3; then
+          log "could not check out $branchName — skipping"
+          markQueueItem "$queueEntry" "!"
+          skippedCount=$((skippedCount + 1))
+          continue
+        fi
+      fi
+
+      if [[ ! -d "$worktreePath" ]]; then
+        log "worktree was not created at $worktreePath — skipping"
+        markQueueItem "$queueEntry" "!"
+        skippedCount=$((skippedCount + 1))
+        continue
+      fi
+
+      checkpointPath="$repoPath/$runDirectory/logs/$slug.checkpoint.json"
+      printf '{"slug":"%s","branch":"%s","worktree":"%s","started_at":"%s","resumed_from":"%s","phases":[]}\n' \
+        "$slug" "$branchName" "$worktreePath" "$(date '+%Y-%m-%dT%H:%M:%S%z')" "$stateVerdict" > "$checkpointPath"
+
+      export OVERNIGHT_WORKTREE="$worktreePath"
+      specLog="$repoPath/$runDirectory/logs/$slug.log"
+
+      if [[ "$stateVerdict" == "LOCAL-ONLY" ]]; then
+        pushInstruction="Push this branch with 'git push -u origin $branchName', then open"
+      else
+        pushInstruction="The branch is already pushed. Open"
+      fi
+
+      runPhase ship \
+        "The work for this spec is already committed on $branchName ($stateCommitsAhead commits) but no pull request covers it. $pushInstruction a pull request with 'gh pr create'. Read the diff against the base branch first so the description matches what is actually there. Title from the spec; body should cover what was built and anything a reviewer should know. Do NOT merge — the user reviews and merges. End your reply with a single line: SPEC-PR: <url>"
+
+      # Same rule as the normal ship path: a phase's claim about what it did is
+      # not evidence. Ask GitHub.
+      resumeState=$("$SCRIPT_DIR/spec-state.sh" --json "$repoPath" "$slug" 2>/dev/null)
+      resumeVerdict=$(printf '%s' "$resumeState" | jq -r '.verdict // "UNKNOWN"')
+      resumePullRequest=$(printf '%s' "$resumeState" | jq -r '.pull_request_url // ""')
+
+      unset OVERNIGHT_WORKTREE
+
+      if [[ "$resumeVerdict" == "SHIPPED" && -n "$resumePullRequest" ]]; then
+        log "SHIPPED — $resumePullRequest"
+        printf -- '- %s  %s  %s\n' "$(date '+%H:%M:%S')" "$slug" "$resumePullRequest" \
+          >> "$runDirectory/shipped.md"
+        {
+          printf '\n## %s — SHIPPED (resumed)\n\n' "$slug"
+          printf 'Committed work was already on `%s` (state: **%s**) with no pull\n' \
+            "$branchName" "$stateVerdict"
+          printf 'request. This run opened one rather than stopping to ask.\n\n'
+          printf 'Pull request: %s\n' "$resumePullRequest"
+        } >> "$runLog"
+        checkpointField result "SHIPPED"
+        checkpointField pull_request "$resumePullRequest"
+        markQueueItem "$queueEntry" "x"
+        shippedCount=$((shippedCount + 1))
+      else
+        # The mechanical step did not work. That is genuinely worth a human's
+        # attention, so this halts the way the old shared arm always did.
+        log "could not open a pull request for $slug (state: $resumeVerdict) — stopping the run"
+        {
+          printf '\n## %s — NEEDS A DECISION\n\n' "$slug"
+          printf 'Committed work sits on `%s` (state was **%s**) with no pull\n' \
+            "$branchName" "$stateVerdict"
+          printf 'request. This run tried to open one, and afterwards the state was\n'
+          printf '**%s** — so it did not work.\n\n' "$resumeVerdict"
+          printf 'Worktree: `%s`\n\n' "$worktreePath"
+          printf 'Resolve it with `/overnight %s`. The phase log is at\n' "$slug"
+          printf '`%s/logs/%s.ship.jsonl`.\n' "$runDirectory" "$slug"
+        } >> "$runLog"
+        checkpointField result "BLOCKED"
+        checkpointField block_reason "ship phase left the spec at $resumeVerdict"
+        markQueueItem "$queueEntry" "?"
+        skippedCount=$((skippedCount + 1))
+        halted=true
+        haltReason="$slug could not be shipped from its committed state"
+        break
+      fi
+      continue
+      ;;
+
+    DIRTY)
+      # Uncommitted work. Unlike the committed verdicts above, this one is
+      # genuinely ambiguous: the changes could be half-applied, abandoned, or
+      # complete, and only reading the diff can tell. That is a judgment call,
+      # which is the orchestrator's job, not this script's. Guessing wrong
+      # either duplicates work or destroys it, so it stops.
+      log "$slug holds uncommitted work ($stateVerdict) — stopping the run"
       {
         printf '\n## %s — NEEDS A DECISION\n\n' "$slug"
         printf 'State: **%s** — %s commits ahead of base, %s uncommitted files.\n\n' \
@@ -573,82 +849,6 @@ for slug in "${pendingSpecs[@]}"; do
   # raw stream goes to a .jsonl for forensics; render-stream.py turns it into a
   # readable feed so the run can be watched while it happens.
 
-  # runPhase <name> <prompt> [extra claude args...]
-  # Leaves the phase's final text in $phaseOutput and its raw stream on disk.
-  # Sets $phaseHealthy false and $runExhausted true when the phase did not
-  # actually run — see the health check below.
-  runPhase() {
-    local phaseName="$1" phasePrompt="$2"
-    shift 2
-
-    local streamPath="$runDirectory/logs/$slug.$phaseName.jsonl"
-    streamPath="$repoPath/$streamPath"
-
-    echo
-    log "── $slug · $phaseName ──"
-
-    (
-      cd "$worktreePath" || exit 2
-      claude -p "$phasePrompt" \
-        --permission-mode auto \
-        --add-dir "$repoPath" \
-        --output-format stream-json \
-        --verbose \
-        "$@" \
-        2>>"$specLog"
-    ) | tee "$streamPath" | "$SCRIPT_DIR/render-stream.py" "$slug/$phaseName"
-
-    phaseOutput=$(python3 "$SCRIPT_DIR/extract-result.py" "$streamPath")
-    printf '\n===== %s =====\n%s\n' "$phaseName" "$phaseOutput" >> "$specLog"
-
-    # Did this phase actually run, or did it come back holding a banner?
-    #
-    # A rate-limited turn returns instantly, with well-formed output, having
-    # done nothing. On 2026-08-25 twelve consecutive phases did exactly that
-    # and every one of them was scored green, because the triage below only
-    # ever looked for the word FAIL. The health check is what makes "returned
-    # without running" distinguishable from "ran and found nothing wrong".
-    local healthJson
-    healthJson=$(python3 "$SCRIPT_DIR/extract-result.py" --health "$streamPath" 2>/dev/null)
-
-    phaseHealthy=true
-    phaseUnhealthyReason=""
-
-    if [[ -n "$healthJson" ]]; then
-      local phaseExhausted phaseIsError phaseSilent phaseResetsAt phaseSawResult
-      phaseExhausted=$(printf '%s' "$healthJson" | jq -r '.exhausted // false')
-      phaseIsError=$(printf '%s' "$healthJson" | jq -r '.is_error // false')
-      phaseSilent=$(printf '%s' "$healthJson" | jq -r '.silent // false')
-      phaseSawResult=$(printf '%s' "$healthJson" | jq -r '.saw_result // false')
-      phaseResetsAt=$(printf '%s' "$healthJson" | jq -r '.resets_at // ""')
-
-      if [[ "$phaseExhausted" == "true" ]]; then
-        phaseHealthy=false
-        runExhausted=true
-        exhaustionResetsAt="$phaseResetsAt"
-        phaseUnhealthyReason="session limit reached"
-        [[ -n "$phaseResetsAt" ]] && phaseUnhealthyReason="session limit reached (resets $phaseResetsAt)"
-      elif [[ "$phaseIsError" == "true" ]]; then
-        phaseHealthy=false
-        phaseUnhealthyReason="the phase returned an error"
-      elif [[ "$phaseSilent" == "true" ]]; then
-        phaseHealthy=false
-        phaseUnhealthyReason="the phase produced no output and called no tools"
-      elif [[ "$phaseSawResult" != "true" ]]; then
-        phaseHealthy=false
-        phaseUnhealthyReason="the stream ended without a result (killed or crashed)"
-      fi
-    else
-      phaseHealthy=false
-      phaseUnhealthyReason="could not read the phase's stream"
-    fi
-
-    if ! $phaseHealthy; then
-      log "!! $phaseName did not run: $phaseUnhealthyReason"
-    fi
-
-    checkpointPhase "$phaseName" "$healthJson"
-  }
 
   # -- Implement -----------------------------------------------------------
   runPhase implement "/implement-spec $slug"
@@ -716,6 +916,23 @@ for slug in "${pendingSpecs[@]}"; do
     suggestionCount=$(printf '%s' "$reviewOutput" | grep -E '^REVIEW-SUGGESTIONS:' | tail -1 \
       | sed -E 's/^REVIEW-SUGGESTIONS:[[:space:]]*//; s/[^0-9].*$//' || true)
     suggestionCount="${suggestionCount:-0}"
+
+    # QA concerns: things QA saw, judged non-blocking, and passed anyway —
+    # most often a visual difference in a snapshot it decided was cosmetic.
+    # They must not change the verdict, and they must not evaporate either.
+    # The skill has always told QA to emit these; nothing read them, so a
+    # concern raised on a passing spec died in the phase log and never
+    # reached the morning. File them where the report already looks.
+    qaConcerns=$(printf '%s' "$qaOutput" | grep -E '^QA-CONCERN:' || true)
+    if [[ -n "$qaConcerns" ]]; then
+      concernCount=$(printf '%s\n' "$qaConcerns" | grep -c . || true)
+      log "qa raised $concernCount concern(s) — filing them for the report"
+      {
+        printf '\n## %s — QA concerns (attempt %s)\n\n' "$slug" "$attempt"
+        printf 'QA passed these but flagged them for a human to look at.\n\n'
+        printf '%s\n' "$qaConcerns" | sed -E 's/^QA-CONCERN:[[:space:]]*/- /'
+      } >> "$repoPath/$runDirectory/suggestions.md"
+    fi
 
     log "triage: tests=$testsVerdict, qa=$qaVerdict, bugs=$bugCount, suggestions=$suggestionCount"
 
@@ -789,7 +1006,7 @@ approach changed and the next attempt does not repeat the search."
     fi
 
     runPhase "fix-$attempt" \
-      "Verification failed. Fix every blocking issue below, then commit. Do NOT act on anything labelled a suggestion — append those to overnight/$RUN_DATE/suggestions.md under a '## $slug' heading instead, and leave that code alone.$searchGuidance
+      "Verification failed. Fix every blocking issue below, then commit. Do NOT act on anything labelled a suggestion — append those to $repoPath/$runDirectory/suggestions.md under a '## $slug' heading instead, and leave that code alone.$searchGuidance
 
 TEST OUTPUT:
 $testsOutput
@@ -985,7 +1202,7 @@ done < <(readQueue)
 # queue actually drained, the session limit was never hit, and there is budget
 # left over. Otherwise the run says plainly that the report is owed, and the
 # morning `/overnight` picks it up.
-reportCommand="/overnight-report $RUN_DATE"
+reportCommand="/overnight-report $RUN_DATE $runId"
 reportDeferredReason=""
 
 if $runExhausted; then
@@ -1035,7 +1252,9 @@ else
 fi
 
 echo
+echo "Run:         $runId"
 echo "Run record:  $runLog"
+echo "Console log: $runDirectory/loop.log"
 echo "Suggestions: $runDirectory/suggestions.md"
 [[ -f "$runDirectory/shipped.md" ]] && echo "Shipped log: $runDirectory/shipped.md"
 echo

@@ -1,6 +1,6 @@
 ---
 name: overnight-report
-description: Publish the morning artifact for an overnight run — one page covering every spec, what shipped, what blocked, and what needs the user's attention. Reads overnight/<date>/. Trigger on /overnight-report [date].
+description: Publish the morning artifact for an overnight run — one page covering every spec, what shipped, what blocked, and what needs the user's attention. Reads overnight/<date>/<run-id>/. Trigger on /overnight-report [date] [run-id].
 disable-model-invocation: true
 ---
 
@@ -10,8 +10,26 @@ Publish one artifact covering the whole night. This is the deliverable the user
 actually wakes up to — the code is on branches they have not read, in pull
 requests they have not opened. The page is how they find out what happened.
 
-Read `overnight/$ARGUMENTS/` — or today's date if `$ARGUMENTS` is empty. If that
-directory does not exist, list what is under `overnight/` and stop.
+## Which run to report on
+
+`$ARGUMENTS` is `[date] [run-id]`; both are optional. Resolve the run directory
+in this order:
+
+1. **Both given** — read `overnight/<date>/<run-id>/`.
+2. **Date only** — look under `overnight/<date>/`. If exactly one `run-*`
+   directory is there, use it. If several are, **do not merge them**: they are
+   separate runs with separate verdicts, and a page that blends two runs'
+   results describes a night that never happened. List them with their start
+   times and ask which one, or report the most recent and say plainly at the
+   top of the page that others exist and are not covered.
+3. **Neither** — today's date, then rule 2.
+
+A run directory holds `RUN.md`, `loop.log`, `logs/`, `shipped.md` and
+`suggestions.md`. `QUEUE.md` sits one level up, at the date, because the
+operator writes it before any run exists.
+
+If the resolved directory does not exist, list what is under `overnight/` and
+stop.
 
 ## Read first
 
@@ -20,7 +38,12 @@ directory does not exist, list what is under `overnight/` and stop.
 - **`logs/<slug>.log`** — the full session per spec. This is where the prose
   written for the morning lives, above each `SPEC-RESULT:` block. Pull the real
   account from here; `RUN.md` only carries the summary lines.
-- **`suggestions.md`** — non-blocking review findings, filed but not acted on.
+- **`suggestions.md`** — non-blocking findings, filed but not acted on. Two
+  kinds live here: code-review suggestions, and **QA concerns** (`## <slug> —
+  QA concerns`) where QA looked at a rendered snapshot, saw a difference, and
+  judged it cosmetic. Surface the QA concerns distinctly — they are a machine's
+  judgment call about what a screen looks like, and the user is the one who
+  gets to overrule it.
 - **`specs/<slug>/SPEC.md`** — what was asked for.
 - **`specs/<slug>/implementation-notes.md`** — deviations, and the per-attempt
   log for anything that took more than one try.
@@ -73,6 +96,12 @@ what never cleared, the best read on why, and what to try next. Link the branch
 even though there is no pull request — a branch someone can look at is worth far
 more than a discarded one.
 
+**QA concerns** — anything QA passed but flagged about a rendered snapshot.
+Give these their own short section rather than burying them among code
+suggestions: say which spec, what QA saw, and that it shipped anyway. A missing
+control or a dropped label is exactly the kind of thing that is obvious to a
+person in two seconds and invisible to every automated check downstream.
+
 **Suggestions** — grouped by spec, from `suggestions.md`. These were deliberately
 not acted on. Present them as a list to skim and decide on, not as work owed.
 
@@ -93,8 +122,9 @@ partway and you are adding the remaining specs, pass the existing artifact's
 `url`** so it updates in place rather than creating a second page. Find it in
 `RUN.md` if the loop recorded it, or with `action: "list"`.
 
-Write the file to `overnight/<date>/report.html` so it is re-publishable later
-without rebuilding it.
+Write the file to the run directory as `report.html` — the same directory
+`RUN.md` was read from, not the date level — so it is re-publishable later
+without rebuilding it, and so two runs on one date keep two reports.
 
 Then **append the artifact URL to `RUN.md`** under a `## Report` heading. That
 file is the durable record; the URL belongs in it.

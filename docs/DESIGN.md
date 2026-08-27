@@ -238,11 +238,18 @@ Everything else the runner needs, it generates at runtime:
 <repo>/specs/<slug>/SPEC.md                   ← you write these
 <repo>/specs/<slug>/implementation-notes.md   ← the runner maintains
 <repo>/overnight/<date>/
-    QUEUE.md          ← specs to run, with status
-    RUN.md            ← what happened; the durable record
-    suggestions.md    ← non-blocking review notes, for later
-    logs/<slug>.log
+    QUEUE.md          ← specs to run, with status; an input you write
+    <run-id>/         ← one per run: run-<HHMMSS>-<pid>
+        RUN.md            ← what happened; the durable record
+        loop.log          ← the runner's own console output
+        suggestions.md    ← non-blocking review notes and QA concerns
+        shipped.md        ← pull requests, appended as they are confirmed
+        logs/<slug>.log
 ```
+
+Everything a run produces lives under its own `<run-id>`, so two runs on one
+date cannot append into each other's records. `QUEUE.md` stays at the date
+level because it is written before any run exists.
 
 Worktrees live at `../wt-<slug>` — **outside** the repo, created with plain
 `git worktree add`.
@@ -490,9 +497,10 @@ that will die halfway.
 have not read, in pull requests they have not opened; the page is how they find
 out what happened.*
 
-Reads `overnight/<date>/` — `RUN.md` for the spine, `logs/<slug>.log` for the
-prose each spec wrote for the morning, `suggestions.md`, the specs, and the diff
-for anything shipped.
+Reads a single run directory, `overnight/<date>/<run-id>/` — `RUN.md` for the
+spine, `logs/<slug>.log` for the prose each spec wrote for the morning,
+`suggestions.md`, the specs, and the diff for anything shipped. Given only a
+date it resolves the run itself, and refuses to blend two runs into one page.
 
 Structure: header with the shape of the night → **what to do first** (the
 actions waiting, ordered) → one section per spec, shipped then blocked then
@@ -504,7 +512,8 @@ carries the syntax; and give a blocked spec the same care as a shipped one —
 it is often the most valuable section, because it is the one that needs them.
 
 Publishes to a stable title (`Overnight <date>`) and saves the HTML to
-`overnight/<date>/report.html` so it can be republished without rebuilding, then
+`overnight/<date>/<run-id>/report.html` so it can be republished without
+rebuilding, then
 appends the artifact URL to `RUN.md`. If the run produced nothing, it says so in
 two sentences and **does not publish** — an empty artifact costs a click to
 discover it was empty.
