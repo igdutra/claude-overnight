@@ -169,10 +169,20 @@ exec > >(tee -a "$runConsoleLog") 2>&1
 # Refusing up front is the honest behaviour. Multiple runs against *different*
 # repos stay fine; so does a second run once the first has finished.
 lockDirectory="$repoPath/.git/overnight.lock"
-if mkdir "$lockDirectory" 2>/dev/null; then
+writeLockOwner() {
   printf '%s\n' "$$" > "$lockDirectory/pid"
   printf '%s\n' "$runId" > "$lockDirectory/run-id"
   printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$lockDirectory/started-at"
+  # The command name of the process holding the lock. PIDs recycle — this box
+  # tops out at a few thousand — so a dead run's pid is quickly reused by
+  # something unrelated, and `kill -0` alone would then report a stale lock as
+  # live and refuse a legitimate run forever. Checking the name too means the
+  # pid must still belong to a bash process before we believe it.
+  ps -o comm= -p "$$" 2>/dev/null | tr -d ' \n' > "$lockDirectory/comm" || true
+}
+
+if mkdir "$lockDirectory" 2>/dev/null; then
+  writeLockOwner
 else
   lockPid="$(cat "$lockDirectory/pid" 2>/dev/null || true)"
   lockRunId="$(cat "$lockDirectory/run-id" 2>/dev/null || echo unknown)"
@@ -181,7 +191,19 @@ else
   # A lock whose process is gone is stale — a previous run was killed before it
   # could clean up. Reclaim it rather than making the operator delete a
   # directory by hand to get their repo back.
+  lockComm="$(cat "$lockDirectory/comm" 2>/dev/null || true)"
+  livePid=false
   if [[ -n "$lockPid" ]] && kill -0 "$lockPid" 2>/dev/null; then
+    # The pid exists. Is it still the same program, or has it been recycled?
+    currentComm="$(ps -o comm= -p "$lockPid" 2>/dev/null | tr -d ' \n')"
+    if [[ -z "$lockComm" || "$currentComm" == "$lockComm" ]]; then
+      livePid=true
+    else
+      log "lock pid $lockPid is now '$currentComm', not '$lockComm' — the pid was recycled"
+    fi
+  fi
+
+  if $livePid; then
     fail "another overnight run is already working in this repo.
 
    run:     $lockRunId (pid $lockPid)
@@ -193,16 +215,29 @@ else
   fi
 
   log "found a stale lock from $lockRunId (pid ${lockPid:-unknown}, started $lockStarted)"
-  log "no such process is running — reclaiming it"
-  printf '%s\n' "$$" > "$lockDirectory/pid"
-  printf '%s\n' "$runId" > "$lockDirectory/run-id"
-  printf '%s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" > "$lockDirectory/started-at"
+  log "no such run is holding it — reclaiming it"
+  writeLockOwner
 fi
 
 # Release on every exit path, including failures and Ctrl-C. A lock that
 # outlives its run turns the next launch into a puzzle.
+#
+# INT/TERM need their own handlers rather than relying on the EXIT trap alone.
+# A run spends nearly all its wall time blocked in a foreground `claude -p`
+# child, and bash defers a trap until that child returns — so a killed run
+# would leave the lock behind until something else cleaned it up. Handling the
+# signal explicitly and re-raising it releases promptly and still reports the
+# right exit status to whatever killed us.
 releaseLock() { rm -rf "$lockDirectory" 2>/dev/null || true; }
-trap releaseLock EXIT INT TERM
+onSignal() {
+  local signalName="$1"
+  releaseLock
+  trap - "$signalName" EXIT
+  kill -s "$signalName" "$$"
+}
+trap releaseLock EXIT
+trap 'onSignal INT' INT
+trap 'onSignal TERM' TERM
 
 # The queue is an input, not an output: the operator writes it before any run
 # exists, so it stays at the date level rather than moving under the run
