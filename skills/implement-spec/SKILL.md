@@ -10,6 +10,24 @@ Resolutions under `Open Questions / Risks` are decided — build on them, don't
 re-open them. If the approach fails mid-build, re-plan against `Requirements`;
 the goal holds even when the design changes.
 
+## First: check whether this is already partly built
+
+You may be running on a worktree that already holds work — a previous attempt
+that was interrupted, or one the overnight loop is resuming. Before writing
+anything, look: if `specs/$ARGUMENTS/implementation-notes.md` exists, or source
+files the spec calls for are already there, **treat the spec as partially or
+fully built.**
+
+In that case the job is to *close the gap*, not to start over. Read the notes
+and the existing code, check them against `SPEC.md`, and implement only what is
+missing or wrong. Re-implementing from scratch on top of working code throws
+away a previous session's reasoning and routinely reintroduces exactly the
+deviations that notes file was written to record.
+
+If the existing work looks complete, say so plainly and verify it against the
+spec rather than manufacturing changes to look busy — the verification phases
+that follow are what decide whether it is actually done.
+
 Keep `specs/$ARGUMENTS/implementation-notes.md` current for the whole task.
 If an edge case forces you off the plan: take the conservative option, append
 one line under `## Deviations` (what changed and why), continue.

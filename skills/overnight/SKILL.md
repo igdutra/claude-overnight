@@ -191,13 +191,36 @@ ${CLAUDE_PLUGIN_ROOT}/overnight/loop.sh <repo-root>
 ```
 
 Run it in the **background** — a full run takes hours, and holding the session
-open adds nothing. Tell the user it has started, where the log is, and roughly
-what to expect.
+open adds nothing.
+
+**Do not redirect its stdout to a log file of your own choosing.** `loop.sh`
+writes its own console log inside the run directory and prints the exact
+`tail -f` command at launch. Read that path out of its output and give the user
+*that*; inventing a redirect is how a previous run left the user tailing a file
+nothing was writing to. Redirecting to `/dev/null` is fine — the log on disk is
+complete either way.
+
+Each run writes everything it produces under
+`overnight/<date>/run-<HHMMSS>-<pid>/` — `RUN.md`, `loop.log`, `logs/`,
+`shipped.md`, `suggestions.md`. Runs on the same day therefore never share
+state. `QUEUE.md` stays one level up at `overnight/<date>/`, because it is an
+input the operator writes before any run exists.
+
+**One run per repo at a time.** `loop.sh` takes a lock and refuses to start if
+another run is already working in that repo — every run shares the same
+`../wt-<slug>` and `spec/<slug>` namespace, so two would race each other over
+the same worktrees. If it refuses, it names the run holding the lock and when
+it started. A lock left behind by a killed run is detected as stale and
+reclaimed automatically; it never needs deleting by hand.
 
 Useful options, when the user asked for something specific:
 
 - `--dry-run` — print what would happen without creating worktrees or calling
   Claude. Worth doing unprompted the first time a repo is used, then continuing.
+- `--run-id <id>` — name this run's directory instead of taking the default.
+  Worth it when the user wants a run they can refer to later by name.
+- `--queue <file>` — run a queue other than today's. Two runs meant to work
+  different spec sets need this; without it they share one queue file.
 - `--max-specs <n>` — cap the number of specs this run.
 - `--budget <tokens>` — override the usage ceiling.
 
