@@ -1290,7 +1290,7 @@ echo
 echo "Run:         $runId"
 echo "Run record:  $runLog"
 echo "Console log: $runDirectory/loop.log"
-echo "Suggestions: $runDirectory/suggestions.md"
+[[ -f "$runDirectory/suggestions.md" ]] && echo "Suggestions: $runDirectory/suggestions.md"
 [[ -f "$runDirectory/shipped.md" ]] && echo "Shipped log: $runDirectory/shipped.md"
 echo
 echo "Worktrees are left in place on purpose — they hold the branches under review."
