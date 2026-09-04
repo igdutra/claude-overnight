@@ -45,6 +45,18 @@ readonly DEFAULT_MAX_SPECS=25
 # fourth identical round will not solve.
 readonly MAX_FIX_ATTEMPTS=3
 
+# How much of each verdict phase's output the fix prompt carries verbatim.
+#
+# The fix phase is handed the test, QA and review output so it can act on them.
+# None of it was bounded, so a chatty test runner could put thousands of lines
+# of failure text into the prompt, and by the third attempt the one phase that
+# actually changes code was reasoning from the most polluted context in the
+# run. Head and tail are where the verdict and the first real error live; the
+# middle is repetition. What gets cut is not lost — the full text is in the
+# phase log, and the fix prompt says where.
+readonly PHASE_EXCERPT_HEAD_LINES=120
+readonly PHASE_EXCERPT_TAIL_LINES=80
+
 # Stop taking new specs past this much usage in the trailing five hours. The
 # reserve below it is what writes the morning artifact — running the window dry
 # and losing the report is the worst possible ending.
@@ -399,6 +411,32 @@ readBugCount() {
   fi
 }
 
+# Bound one phase's output for inclusion in the fix prompt.
+#
+# Under the cap the text passes through untouched. Over it, the head and tail
+# survive with a marker between them naming the log that holds the whole thing,
+# so the fix session can read the rest if it needs to instead of being handed
+# it whether it needs it or not.
+#
+# excerptPhaseOutput <output> <logPath> → the text to embed
+excerptPhaseOutput() {
+  local output="$1" logPath="$2"
+  local lineCount elidedCount
+
+  lineCount=$(printf '%s\n' "$output" | wc -l | tr -d ' ')
+
+  if (( lineCount <= PHASE_EXCERPT_HEAD_LINES + PHASE_EXCERPT_TAIL_LINES )); then
+    printf '%s' "$output"
+    return 0
+  fi
+
+  elidedCount=$(( lineCount - PHASE_EXCERPT_HEAD_LINES - PHASE_EXCERPT_TAIL_LINES ))
+
+  printf '%s\n' "$output" | head -n "$PHASE_EXCERPT_HEAD_LINES"
+  printf '\n[... %s lines elided. Full output: %s ...]\n\n' "$elidedCount" "$logPath"
+  printf '%s\n' "$output" | tail -n "$PHASE_EXCERPT_TAIL_LINES"
+}
+
 # ---------------------------------------------------------------------------
 # The checkpoint
 # ---------------------------------------------------------------------------
@@ -708,6 +746,7 @@ for slug in "${pendingSpecs[@]}"; do
 
       export OVERNIGHT_WORKTREE="$worktreePath"
       specLog="$repoPath/$runDirectory/logs/$slug.log"
+      phaseLogPath="$repoPath/$runDirectory/logs"
 
       if [[ "$stateVerdict" == "LOCAL-ONLY" ]]; then
         pushInstruction="Push this branch with 'git push -u origin $branchName', then open"
@@ -862,6 +901,9 @@ for slug in "${pendingSpecs[@]}"; do
   fi
 
   specLog="$repoPath/$runDirectory/logs/$slug.log"
+  # Directory holding every phase's raw stream, for the elision markers in the
+  # fix prompt to point at. Must stay in step with runPhase's $streamPath.
+  phaseLogPath="$repoPath/$runDirectory/logs"
   log "starting claude in $worktreePath"
   log "raw stream: $specLog.jsonl"
   echo
@@ -1040,17 +1082,26 @@ specs/$slug/implementation-notes.md, so the morning report can explain why the
 approach changed and the next attempt does not repeat the search."
     fi
 
+    # Each block is capped, with the phase log named in place of what was
+    # cut. The fix session can go read the full text; it is no longer forced
+    # to carry all of it just in case.
+    testsExcerpt=$(excerptPhaseOutput "$testsOutput" "$phaseLogPath/$slug.tests-$attempt.jsonl")
+    qaExcerpt=$(excerptPhaseOutput "$qaOutput" "$phaseLogPath/$slug.qa-$attempt.jsonl")
+    reviewExcerpt=$(excerptPhaseOutput "$reviewOutput" "$phaseLogPath/$slug.review-$attempt.jsonl")
+
     runPhase "fix-$attempt" \
-      "Verification failed. Fix every blocking issue below, then commit. Do NOT act on anything labelled a suggestion — append those to $repoPath/$runDirectory/suggestions.md under a '## $slug' heading instead, and leave that code alone.$searchGuidance
+      "Verification failed. Fix every blocking issue below, then commit. Do NOT act on anything labelled a suggestion — append those to $repoPath/$runDirectory/suggestions.md under a '## $slug' heading instead, and leave that code alone.
+
+Long phase output is excerpted. Where you see an elision marker it names the log holding the full text — read it if the excerpt is not enough, and do not guess at what was cut.$searchGuidance
 
 TEST OUTPUT:
-$testsOutput
+$testsExcerpt
 
 QA:
-$qaOutput
+$qaExcerpt
 
 CODE REVIEW:
-$reviewOutput"
+$reviewExcerpt"
   done
 
   # -- Ship or block -------------------------------------------------------

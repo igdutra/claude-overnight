@@ -267,9 +267,11 @@ pull request on actual code.
 ## Layout
 
 ```
+CLAUDE.md                        context for working on the plugin itself
 .claude-plugin/plugin.json       plugin manifest
 .claude-plugin/marketplace.json  self-hosting, so this repo installs itself
 hooks/hooks.json                 registers the guardrail
+skills/INDEX.md                  what each skill does, and when it runs
 skills/                          the 11 skills
 overnight/
   loop.sh                        the outer loop — one process per spec
@@ -287,7 +289,11 @@ docs/DESIGN.md                   why it is shaped this way
 - **[`docs/DESIGN.md`](docs/DESIGN.md)** — the full design: research provenance,
   why plain `git worktree` instead of `claude --worktree`, why a loop given a 1M
   context window, the verdict contracts, and an honest account of the limits.
+- **[`skills/INDEX.md`](skills/INDEX.md)** — the eleven skills: what each one
+  does, when it runs, and which ones emit verdicts.
 - **[`overnight/hooks/README.md`](overnight/hooks/README.md)** — how the gate works.
+- **[`CLAUDE.md`](CLAUDE.md)** — orientation for a session working on the plugin
+  itself. Not shipped into target repos; `/overnight-init` writes those.
 
 ## License
 
