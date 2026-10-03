@@ -367,7 +367,7 @@ there is no "PASS with a caveat in prose".
 
 ```
 REVIEW-BUGS: <n>
-REVIEW-BUG: <file>:<line> — <what's wrong>       (one per bug)
+REVIEW-BUG: <file>:<line> — <what's wrong; how to show it fails>   (one per bug)
 REVIEW-SUGGESTIONS: <n>
 ```
 

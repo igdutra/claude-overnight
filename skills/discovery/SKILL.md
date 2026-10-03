@@ -20,6 +20,11 @@ Look for unknown unknowns in this task: assumptions the request rests on,
 decisions it implies but doesn't state, parts of the codebase it will touch that
 the user may not know exist.
 
+If the user can't describe what they want in detail, ask for a reference. The
+best reference is source code: a library or component that already does it, even
+in a different language. Point at the folder and say what to look for — it gives
+richer detail than a screenshot.
+
 ## 3. Checkpoint
 
 Count the real questions — ones whose answer would change the architecture.

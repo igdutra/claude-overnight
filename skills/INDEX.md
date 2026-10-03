@@ -32,6 +32,36 @@ Steps 5 are two skills that run together: `/qa` covers functionality,
 `/overnight` and `/overnight-report` are the only two commands anyone should
 need to type. Everything else is machinery they drive.
 
+## Which model, at what effort
+
+Guidance for picking a model in your own session (`/model`, `/effort`). Nothing
+here is enforced: no skill pins the session's model, and the overnight runner
+inherits whatever default the session has. The one exception is `/spec`, which
+runs a single Haiku subagent to check the finished spec for contradictions.
+
+| Step | Model | Effort | Why |
+|---|---|---|---|
+| `/discovery`, `/spec` | Opus 5.5 | high | The wrong calls get made here, and effort cannot fix a wrong call later |
+| `/prototype` | Sonnet 5.5 (Opus for non-UI architecture bets) | low to medium | Cheap to iterate; Sonnet's strength is polished artifacts |
+| `/implement-spec` | Sonnet 5.5 | medium | Works best from a clear spec with a way to check the result |
+| `/qa`, `/local-code-review` | Sonnet 5.5 | high | Verification is where high effort pays |
+| Fix attempt 3 (overnight only, not wired in) | Opus 5.5 | high | Two failed fixes usually mean the approach is wrong, not that an edge case was missed |
+
+**Opus writes the spec, Sonnet cold-reads it.** After `/spec`, ask Sonnet to
+implement from `SPEC.md` alone and list every ambiguity. It is the weaker
+reader, so every question it raises is a gap in the spec.
+
+Inferred, not stated by the posts: Opus at high effort for `/discovery` and
+`/spec`, Opus for fix attempt 3, and the cold-read above. They follow from the
+effort post's finding that higher effort fixes missed edge cases but not a wrong
+approach.
+
+Sources: [Getting the Most Out of Opus 5.5](https://claude.dev/blog/getting-the-most-out-of-opus-5-5/),
+[Building with Claude Sonnet 5.5](https://claude.dev/blog/building-with-claude-sonnet-5-5/),
+[Spending Your Effort](https://claude.dev/blog/spending-your-effort/). Derived
+from those posts and the design, not from an eval — run one spec both ways
+before trusting the split.
+
 ## Conventions
 
 Every skill except `discovery` and `prototype` carries

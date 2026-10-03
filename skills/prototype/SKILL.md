@@ -26,6 +26,14 @@ describing changes back.
 Give it the divergence explicitly — tell it the directions differ in approach,
 and name each one's bet.
 
+Before generating, ask once whether there are design habits to leave out. A
+general instruction like "avoid a generic look" mostly swaps one default for
+another; a list of specific patterns works much better, for example a cream or
+off-white background, italic accent words in headings, numbered "01 / 02 / 03"
+section labels, monospace labels, or pill-shaped buttons. If the answer is none,
+move on. Pass the list to `/design`, then look at what it chose instead. If the
+user doesn't like that either, add it to the list and ask again.
+
 `/design` is a research preview; if it fails or isn't available, fall back below.
 
 ### Where the working files live

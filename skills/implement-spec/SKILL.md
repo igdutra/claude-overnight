@@ -4,7 +4,8 @@ description: Workflow step 4 of 7. Implement specs/$ARGUMENTS/SPEC.md, keeping i
 disable-model-invocation: true
 ---
 
-Implement `specs/$ARGUMENTS/SPEC.md`.
+Implement `specs/$ARGUMENTS/SPEC.md`. Done means every item under
+`## Acceptance Criteria` is met.
 
 Resolutions under `Open Questions / Risks` are decided — build on them, don't
 re-open them. If the approach fails mid-build, re-plan against `Requirements`;
@@ -35,6 +36,10 @@ If the existing work looks complete, say so plainly and verify it against the
 spec rather than manufacturing changes to look busy — the verification phases
 that follow are what decide whether it is actually done.
 
+If the spec's Steps say `Task list: yes`, keep a checklist in
+`specs/$ARGUMENTS/TASKS.md`. Tick each item when it's done, and add anything new
+you find.
+
 Keep `specs/$ARGUMENTS/implementation-notes.md` current for the whole task.
 If an edge case forces you off the plan: take the conservative option, append
 one line under `## Deviations` (what changed and why), continue.
@@ -50,3 +55,15 @@ cost, and a session with no memory of this moment gets to debug it blind.
 Prefer the official documentation and the project's issue tracker, note what
 you found under `## Deviations`, and move on. Keep it to a search or two: this
 is for genuine unknowns, not a substitute for reading the code in front of you.
+
+When you change code that can be run, built, or type-checked, and the project
+states how to check it — the commands in `CLAUDE.md`, a documented test or
+build script — run that check before reporting the change done. A syntax-only
+check, or a check command that failed to start, does not count. Run only what
+the project itself states: install nothing, and do not hunt for or invent
+another way to check. If the project states no check, or the stated one cannot
+run here, do not report the change as done. Say which check you did not run and
+why, and leave it to the user.
+
+End your final message with three headings, in this order: **Blocked on me** — a
+decision you left open or a change you want approved; **Changed**; **Found**.

@@ -80,7 +80,9 @@ Skip mechanical detail.
 What this explicitly does not cover. Prevents mid-build scope creep.
 
 ### Steps
-Ordered list, in build order.
+Ordered list, in build order. Finish with `Task list: yes` or `Task list: no` —
+yes when the run will take a while: a long run fills the context window, older
+turns get summarized, and a list in a file survives that.
 
 ### Open Questions / Risks
 A record of what got settled above, not a list of what's still open — by the
@@ -104,5 +106,28 @@ How to check each criterion: tests, commands, manual steps.
 
 ## Then
 
+Once the file is written, spawn one subagent on the Haiku model to check it for
+contradictions. Give it the paths to `SPEC.md` and, if it exists, `discovery.md`
+— not this conversation. A reader that has only the documents is the point.
+Tell it:
+
+> You are a focused checker. Your whole world is these files: <paths>. Read them
+> and nothing else — do not open other files, search the code, browse the web,
+> or edit anything. Look only for contradictions: numbers, names, and scope that
+> disagree within a file or between the two, such as something under Out of
+> Scope that Steps still builds. An alternative that `discovery.md` records as
+> rejected or open is not a contradiction with a spec that settled it. For each
+> one, quote both passages and say which file and section each is in. Do not
+> suggest improvements or point out anything missing. If you find none, reply
+> with exactly: NONE. Keep your reply under 200 words.
+
+Check every flag against the file first — a small model raises false alarms —
+and drop any that do not hold up. If it replies NONE, or none hold up, report
+exactly one line, `✅ Contradiction check done.`, and nothing more. If any hold
+up, do not edit the file. Stop and show each one: both passages and where they
+are. The user decides how to proceed; show the Decisions below only after they
+have.
+
 Show the Decisions section in chat so the user can see what the plan committed
-to. Point out anything they should change before `/implement-spec` runs.
+to. Say whether Steps flags a task list. Point out anything they should change
+before `/implement-spec` runs.

@@ -7,6 +7,16 @@ you hand the machine a queue of specs and go to bed. By morning: working
 branches, open pull requests, and one page explaining what was built and what
 needs your attention.
 
+Everything here was inspired by Anthropic's official guidance for the Claude 5
+family: [A field guide to Claude Fable: finding your
+unknowns](https://claude.com/blog/a-field-guide-to-claude-fable-finding-your-unknowns),
+[Getting the most out of Opus
+5.5](https://claude.dev/blog/getting-the-most-out-of-opus-5-5/), [Building with
+Claude Sonnet 5.5](https://claude.dev/blog/building-with-claude-sonnet-5-5/), and
+[Spending Your Effort](https://claude.dev/blog/spending-your-effort/). What was
+taken from each, and where we departed from them, is recorded in
+[`ROADMAP.md`](ROADMAP.md).
+
 ```
 /discovery → /prototype → /spec  │  /implement-spec → /qa + /local-code-review → /finish
        you, awake, engaged       │        the runner, unattended, overnight
@@ -78,6 +88,9 @@ practices made into a command:
 | Explainers and quizzes | `/finish` |
 | Pitches | `/pitch` |
 
+Later changes to the skills come from the Opus 5.5 and Sonnet 5.5 guides and the
+effort post, and are listed in [`ROADMAP.md`](ROADMAP.md).
+
 The overnight runner is what happens when you take those practices —
 spec-driven development, essentially — and ask what it would take to run the
 back half unattended.
@@ -103,6 +116,15 @@ Or clone and run it directly, without installing:
 git clone https://github.com/igdutra/claude-overnight.git
 claude --plugin-dir ./claude-overnight
 ```
+
+### Without the overnight runner
+
+To run the workflow by hand in a repo that will never run overnight, copy the
+eight daytime skills into that repo's `.claude/skills/` instead of installing
+the plugin. They travel with the repo and need nothing from this one. The steps
+are written as a handoff for a Claude session to follow:
+[`docs/INSTALL-LIGHT.md`](docs/INSTALL-LIGHT.md), with a starter `CLAUDE.md` in
+[`docs/CLAUDE.starter.md`](docs/CLAUDE.starter.md).
 
 ### Working on the plugin itself
 
@@ -282,6 +304,8 @@ overnight/
   hooks/block-dangerous-git.sh   the guardrail
   hooks/test-hook.sh             61 assertions
 docs/DESIGN.md                   why it is shaped this way
+docs/INSTALL-LIGHT.md            the daytime skills without the runner
+docs/CLAUDE.starter.md           starter CLAUDE.md for a hand-run repo
 ```
 
 ## Documentation
@@ -290,7 +314,12 @@ docs/DESIGN.md                   why it is shaped this way
   why plain `git worktree` instead of `claude --worktree`, why a loop given a 1M
   context window, the verdict contracts, and an honest account of the limits.
 - **[`skills/INDEX.md`](skills/INDEX.md)** — the eleven skills: what each one
-  does, when it runs, and which ones emit verdicts.
+  does, when it runs, which ones emit verdicts, and which model and effort to
+  run each on.
+- **[`docs/INSTALL-LIGHT.md`](docs/INSTALL-LIGHT.md)** — the eight daytime skills
+  copied into a repo that does not run overnight.
+- **[`ROADMAP.md`](ROADMAP.md)** — what was adopted from the Claude 5 guides,
+  and what is still open.
 - **[`overnight/hooks/README.md`](overnight/hooks/README.md)** — how the gate works.
 - **[`CLAUDE.md`](CLAUDE.md)** — orientation for a session working on the plugin
   itself. Not shipped into target repos; `/overnight-init` writes those.

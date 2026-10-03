@@ -45,6 +45,7 @@ reads and reports, nothing else.
 Found N issues:
 
 1. <description> — <why it's a bug>
+   Fails when: <how to show it fails>
    <file>:<line>
 
 (or: No issues found.)
@@ -71,8 +72,8 @@ or
 
 ```
 REVIEW-BUGS: 2
-REVIEW-BUG: <file>:<line> — <what's wrong>
-REVIEW-BUG: <file>:<line> — <what's wrong>
+REVIEW-BUG: <file>:<line> — <what's wrong; how to show it fails>
+REVIEW-BUG: <file>:<line> — <what's wrong; how to show it fails>
 REVIEW-SUGGESTIONS: 1
 ```
 
@@ -87,7 +88,8 @@ would actually bite. A finding you're unsure about belongs in Suggestions, where
 it gets read rather than acted on. Padding the bug list burns fix attempts on
 nitpicks and can push a sound implementation into BLOCKED.
 
-One `REVIEW-BUG:` line per bug, naming the file, the line, and what's wrong.
+One `REVIEW-BUG:` line per bug, naming the file, the line, what's wrong, and how
+to show it fails.
 That line is what the next fix attempt works from, so it needs to be specific
 enough to act on without re-deriving the review.
 

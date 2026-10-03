@@ -83,3 +83,53 @@ an automated one.
   `loop.sh` already uses to copy files into fresh worktrees.
 - **Entirely additive.** With the flag absent — the default — `loop.sh`'s
   behavior must be byte-for-byte what it is today.
+
+---
+
+## Skill enhancements from the Opus 5.5 / Sonnet 5.5 guidance
+
+**Status:** items 1 to 9 done (item 2 dropped). Ordered by value when skills
+are run on demand, with QA and review fired only occasionally, so
+`/implement-spec` is often the only gate a spec passes.
+
+Sources: [Opus 5.5](https://claude.dev/blog/getting-the-most-out-of-opus-5-5/),
+[Sonnet 5.5](https://claude.dev/blog/building-with-claude-sonnet-5-5/),
+[Spending Your Effort](https://claude.dev/blog/spending-your-effort/),
+[the Fable field guide](https://claude.com/blog/a-field-guide-to-claude-fable-finding-your-unknowns).
+
+| # | Skill | Change | Source | Status |
+|---|---|---|---|---|
+| 1 | `/implement-spec` | Run the project's stated check before reporting done; install nothing, and hand back to the user if none is stated or it cannot run | Sonnet | Done. Tightened from the article's paragraph: only stated commands, no installs |
+| 2 | `/spec` | Close with a Sonnet cold-read: implement from `SPEC.md` alone, list every ambiguity, fold the answers in | Sonnet, Effort | Dropped from `/spec`: no article basis. Kept as an optional habit in `INDEX.md` |
+| 3 | `/spec` | A Haiku subagent checks `SPEC.md` and `discovery.md` for contradictions; one line if clean, otherwise stop and show them | Opus | Done. The subagent and Haiku are our adaptation of the article's document check |
+| 4 | `/prototype` | Ask once what to avoid, naming specifics | Opus | Done. Reference images dropped: the article says no extra steps are needed |
+| 5 | `/local-code-review` | Add how to show the bug fails to each `REVIEW-BUG:` finding | Opus 5.5 | Done. The "would block the merge" bar was already in the skill. `docs/DESIGN.md` §4 synced; `loop.sh` reads only the count line |
+| 6 | `/spec`, `/implement-spec` | Keep a checklist in `TASKS.md` for a run that will take a while | Opus 5.5 | Done. `/spec` flags `Task list: yes` or `no` in Steps and `/implement-spec` obeys it, so an unattended run asks nothing. The flag is our design; the article gives only the condition |
+| 7 | `/implement-spec` | End the final message with three headings: Blocked on me, Changed, Found | Opus 5.5 | Done. The article puts this in `CLAUDE.md`; it lives in the skill so it travels with it |
+| 8 | `/discovery` | Ask for a reference when the user cannot describe what they want; the best one is source code, even in another language | Fable | Done. The finish-line half is dropped: `/spec` Acceptance Criteria already define "done" |
+| 9 | `/implement-spec` | "Done means every item under `## Acceptance Criteria` is met" | Opus 5.5 | Done. Maps the article's "name the finish line" onto the spec's own definition of done |
+
+### Left from the articles
+
+- **Stop rules** (Opus 5.5, "Tell it which stops you want"): a short rule in
+  `CLAUDE.md` about when to stop and ask and when to keep going. A project
+  setting, not a skill change, and an unattended run cannot ask. Add it to a
+  repo's own `CLAUDE.md` if wanted.
+- **Splitting work across subagents** (Opus 5.5): for audits and migrations over
+  a large codebase. Does not apply; the runner is serial by design (DESIGN §9).
+  Only `/spec` uses a subagent, for the contradiction check.
+
+Everything else in the four articles is done above, already in the skills (the
+Fable guide's blind spot pass, interview, prototypes, plans, notes, explainer and
+pitch; `/qa` already fails what it cannot verify), user behavior (mid-run
+follow-ups, fast mode), Claude apps only (screenshots, projects), or checked with
+nothing to change: no "think hard" or "show your reasoning" lines in any skill,
+and no Sonnet 5 workarounds.
+
+### Parked
+
+- **Pinning a model and effort per skill or per phase in `loop.sh`.** Decided
+  against for now; sessions choose their own model.
+- **Escalating fix attempt 3 to Opus.** Only matters for overnight runs.
+- **`budget.sh` weighting Opus and Sonnet differently.** Unchecked whether the
+  gate sums tokens equally across models. Only matters for overnight runs.
