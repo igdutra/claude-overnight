@@ -60,8 +60,8 @@ Found N issues:
 ## Verdict
 
 After the sections above, as the very last thing you output, a machine-readable
-block. An unattended overnight run parses this to decide what to act on, so the
-format is fixed:
+block. An unattended run parses this to decide what to act on, so the format is
+fixed:
 
 ```
 REVIEW-BUGS: 0
@@ -77,11 +77,11 @@ REVIEW-BUG: <file>:<line> — <what's wrong; how to show it fails>
 REVIEW-SUGGESTIONS: 1
 ```
 
-The split between the two counts is the whole point of the block. Overnight,
-**bugs block and suggestions don't**: a bug sends the work back for another fix
-attempt, while suggestions are filed for the user to read later and the code is
-left alone. So the line a finding lands on decides whether code changes at 3am
-with nobody watching.
+The split between the two counts is the whole point of the block. In an
+unattended run, **bugs block and suggestions don't**: a bug sends the work back
+for another fix attempt, while suggestions are filed for the user to read later
+and the code is left alone. So the line a finding lands on decides whether code
+changes with nobody watching.
 
 That makes the bar for the bug list the same as it is in Step 1 — something that
 would actually bite. A finding you're unsure about belongs in Suggestions, where
@@ -94,4 +94,4 @@ That line is what the next fix attempt works from, so it needs to be specific
 enough to act on without re-deriving the review.
 
 Do not list suggestions individually — the count is enough. Their text is
-already above, and the run files that prose for the user to read in the morning.
+already above, and the run files that prose for the user to read later.

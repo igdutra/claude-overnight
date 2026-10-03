@@ -35,9 +35,9 @@ stays green while checking nothing.
 
 This is not hypothetical, and it fails at two different depths:
 
-- Spec 005 shipped a `ProgramListView` reference PNG that was an empty dark
-  rectangle — the renderer did not rasterize `ScrollView` contents at all — and
-  it passed QA, passed review, and was nearly merged.
+- A list screen shipped a reference PNG that was an empty dark rectangle — the
+  renderer did not rasterize its scrolling content at all — and it passed QA,
+  passed review, and was nearly merged.
 - A row shipped missing its right-hand chevron. The image was not blank, so a
   "does it look empty?" check waves it through. The affordance that tells the
   user the row is tappable was simply gone, and QA should have caught it.
@@ -89,7 +89,7 @@ of what the screen is meant to look like. Prefer it over guessing.
 If `specs/$ARGUMENTS/design.html` exists, read that for the visual reference —
 it is a read-only, static snapshot of the locked design, a few KB of plain
 HTML. **Do not `cat` or read `prototype.html` or any `.dc.html` canvas file** —
-those bundle the design-canvas editor runtime (2.5 MB on spec 006) and reading
+those bundle the design-canvas editor runtime (2.5 MB in one case) and reading
 one floods this session's context. If `design.html` is missing, say so and work
 from the `discovery.md` prose; do not open the canvas.
 
@@ -117,8 +117,7 @@ what the image actually showed.
 When you notice a visual difference that you judge *not* functional — you are
 passing the criterion — do not let it evaporate. Record it as a `QA-CONCERN:`
 line in the verdict block (see below). It leaves the verdict a Pass, and it
-carries into the morning report so a human sees what you saw and can overrule
-you.
+stays in the block so a human sees what you saw and can overrule you.
 
 This is the whole point of looking: a difference you noticed and said nothing
 about is worth no more than never having opened the file. Passing silently is
@@ -165,8 +164,8 @@ verify.
 End with a one-line summary in prose: all criteria pass, or what failed.
 
 Then, as the very last thing you output, a machine-readable block. An unattended
-overnight run parses this to decide whether to ship the work or send it back for
-another fix attempt, so the format is fixed:
+run parses this to decide whether to ship the work or send it back for another
+fix attempt, so the format is fixed:
 
 ```
 QA-VERDICT: PASS
@@ -195,7 +194,7 @@ Rules for the block:
   when the list is empty" is useful and "doesn't work" is not.
 - A logged deviation that could break a criterion which technically passes is
   worth a `QA-CONCERN:` line. So is any visual difference you saw in a snapshot
-  and judged non-functional. It does not change the verdict; it carries forward
-  to the morning report, where a human can overrule your judgment. Write what
+  and judged non-functional. It does not change the verdict; it carries forward,
+  where a human can overrule your judgment. Write what
   you observed, not a reassurance: "row chevron sits ~4px left of the mockup"
   is useful, "minor visual difference" is not.

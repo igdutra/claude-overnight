@@ -14,15 +14,14 @@ the goal holds even when the design changes.
 For the visual reference, read `specs/$ARGUMENTS/design.html` if it exists — a
 read-only, static snapshot of the locked design, a few KB of plain HTML. **Do
 not `cat` or read `prototype.html` or any `.dc.html` canvas file**; those bundle
-the design-canvas editor runtime (2.5 MB on spec 006) and reading one floods
+the design-canvas editor runtime (2.5 MB in one case) and reading one floods
 this session's context. If `design.html` is missing, work from the `SPEC.md`
 prose and the `## Prototype` section of `discovery.md`; do not open the canvas.
 
 ## First: check whether this is already partly built
 
-You may be running on a worktree that already holds work — a previous attempt
-that was interrupted, or one the overnight loop is resuming. Before writing
-anything, look: if `specs/$ARGUMENTS/implementation-notes.md` exists, or source
+You may be running on a branch that already holds work — a previous attempt that
+was interrupted, or one that is being resumed. Before writing anything, look: if `specs/$ARGUMENTS/implementation-notes.md` exists, or source
 files the spec calls for are already there, **treat the spec as partially or
 fully built.**
 
@@ -49,9 +48,8 @@ If you edit `SPEC.md` itself, bump its `Updated:` line to today.
 
 When a framework or API does not behave the way you expected — an error whose
 cause is not obvious, a call that needs setup the docs in your head do not
-mention — search the web before working around it. Here, unattended and at
-2am, an invented workaround becomes a QA failure later at several times the
-cost, and a session with no memory of this moment gets to debug it blind.
+mention — search the web before working around it. Here, unattended, an
+invented workaround becomes a QA failure later at several times the cost, and a session with no memory of this moment gets to debug it blind.
 Prefer the official documentation and the project's issue tracker, note what
 you found under `## Deviations`, and move on. Keep it to a search or two: this
 is for genuine unknowns, not a substitute for reading the code in front of you.
