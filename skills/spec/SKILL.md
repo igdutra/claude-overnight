@@ -99,10 +99,15 @@ things that could still go wrong at build time — are plain bullets.
 ### Acceptance Criteria
 Concrete statements of what "done" means — what must be true, not how to check.
 Each answerable yes/no. Derive these from Requirements where it exists, not
-from Approach.
+from Approach. Number them `AC1`, `AC2`, … as a bold prefix on each bullet, not
+checkboxes: the ID is a stable name that Verification, `/qa` and
+`implementation-notes.md` can cite, while progress is tracked elsewhere (`/qa`
+marks Pass or Fail, `TASKS.md` ticks Steps), so a box in the spec would only
+mix state into the plan.
 
 ### Verification
-How to check each criterion: tests, commands, manual steps.
+How to check each criterion: tests, commands, manual steps. Name the criterion
+IDs each line covers (`**AC3, AC4** …`).
 
 ## Then
 
